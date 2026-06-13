@@ -1,6 +1,12 @@
 <script setup>
 import { ref, onMounted, computed, watch, nextTick } from 'vue'
 import { parseDuration, formatPlayCount } from './utils/bilibili.js'
+import WindowControls from './components/WindowControls.vue'
+import LyricDisplay from './components/player/LyricDisplay.vue'
+import { useLyricStore, usePlayerStore } from './stores'
+
+const lyricStore = useLyricStore()
+const playerStore = usePlayerStore()
 
 // Helper function to strip HTML tags
 function stripHtmlTags(html) {
@@ -102,6 +108,7 @@ const currentVideoEpisodes = ref([])
 const isLoadingEpisodes = ref(false)
 const currentEpisodeIndex = ref(0)
 const albumArtRef = ref(null)
+const showLyricPanel = ref(true)
 
 // 设置功能状态
 const showSettingsPanel = ref(false)
@@ -198,6 +205,12 @@ async function openGitHub() {
 // 点击播放栏封面打开大屏播放
 function openPlayerPageFromCover() {
   showPlayerPage.value = true
+  playerStore.setShowPlayerPage(true)
+}
+
+function closePlayerPage() {
+  showPlayerPage.value = false
+  playerStore.setShowPlayerPage(false)
 }
 
 const playMode = ref('order')
@@ -412,6 +425,14 @@ function getNextMusicIndex() {
 async function playMusic(music) {
   console.log('开始播放:', music.title)
   currentTrack.value = music
+  // 同步到 playerStore，LyricDisplay 监听的是 playerStore.currentTrack
+  playerStore.setCurrentTrack(music)
+  playerStore.setIsPlaying(false)
+  playerStore.setIsAudioLoading(true)
+  playerStore.setAudioError('')
+  playerStore.setDuration(music.duration || 180)
+  playerStore.setCurrentTime(0)
+  playerStore.setBufferedProgress(0)
   isPlaying.value = false
   isAudioLoading.value = true
   audioError.value = ''
@@ -493,12 +514,15 @@ async function playMusic(music) {
   audioElement.value.addEventListener('loadedmetadata', () => {
     console.log('音频加载完成，时长:', audioElement.value.duration)
     duration.value = audioElement.value.duration || music.duration || 180
+    playerStore.setDuration(duration.value)
     isAudioLoading.value = false
+    playerStore.setIsAudioLoading(false)
   })
 
   audioElement.value.addEventListener('timeupdate', () => {
     if (audioElement.value) {
       currentTime.value = audioElement.value.currentTime
+      playerStore.setCurrentTime(currentTime.value)
       // 更新缓冲进度
       updateBufferedProgress()
     }
@@ -507,6 +531,7 @@ async function playMusic(music) {
   audioElement.value.addEventListener('ended', () => {
     console.log('音频播放结束')
     isPlaying.value = false
+    playerStore.setIsPlaying(false)
     updateMediaSession()
     handleTrackEnd()
   })
@@ -514,13 +539,17 @@ async function playMusic(music) {
   audioElement.value.addEventListener('error', (e) => {
     console.error('音频加载错误:', e)
     audioError.value = '音频加载失败'
+    playerStore.setAudioError('音频加载失败')
     isAudioLoading.value = false
+    playerStore.setIsAudioLoading(false)
   })
 
   audioElement.value.addEventListener('canplaythrough', () => {
     console.log('音频可以播放')
     isAudioLoading.value = false
+    playerStore.setIsAudioLoading(false)
     bufferedProgress.value = 100
+    playerStore.setBufferedProgress(100)
   })
 
   audioElement.value.volume = 1.0
@@ -528,14 +557,17 @@ async function playMusic(music) {
   try {
     await audioElement.value.play()
     isPlaying.value = true
+    playerStore.setIsPlaying(true)
     updateMediaSession()
     console.log('音乐播放成功')
   } catch (error) {
     console.error('播放失败:', error)
     isAudioLoading.value = false
+    playerStore.setIsAudioLoading(false)
   }
 
   showPlayerPage.value = true
+  playerStore.setShowPlayerPage(true)
 }
 
 function updateBufferedProgress() {
@@ -647,7 +679,8 @@ async function playEpisode(episode) {
     
     // Update current track
     currentTrack.value = episodeTrack
-    
+    playerStore.setCurrentTrack(episodeTrack)
+
     // Load and play the episode
     await playMusic(episodeTrack)
     
@@ -700,6 +733,7 @@ function handleTrackEnd() {
       playEpisode(nextEpisode)
     } else {
       isPlaying.value = false
+      playerStore.setIsPlaying(false)
     }
   } else {
     // Normal song navigation
@@ -713,6 +747,7 @@ function handleTrackEnd() {
       playMusic(musicList[nextIndex])
     } else {
       isPlaying.value = false
+      playerStore.setIsPlaying(false)
     }
   }
 }
@@ -741,6 +776,7 @@ function togglePlayPause() {
     audioElement.value.play()
   }
   isPlaying.value = !isPlaying.value
+  playerStore.setIsPlaying(isPlaying.value)
   updateMediaSession()
 }
 
@@ -827,6 +863,7 @@ function onProgressInput(event) {
   if (audioElement.value && !isNaN(newTime)) {
     audioElement.value.currentTime = newTime
     currentTime.value = newTime
+    playerStore.setCurrentTime(newTime)
   }
 }
 
@@ -835,7 +872,21 @@ function onProgressChange(event) {
   if (audioElement.value && !isNaN(newTime)) {
     audioElement.value.currentTime = newTime
     currentTime.value = newTime
+    playerStore.setCurrentTime(newTime)
   }
+}
+
+function handleLyricSeek(targetTime) {
+  if (audioElement.value && !isNaN(targetTime)) {
+    audioElement.value.currentTime = targetTime
+    currentTime.value = targetTime
+    playerStore.setCurrentTime(targetTime)
+  }
+}
+
+function toggleLyricPanel() {
+  showLyricPanel.value = !showLyricPanel.value
+  lyricStore.setShowLyricPanel(showLyricPanel.value)
 }
 
 function createPlaylist() {
@@ -1199,6 +1250,8 @@ onMounted(() => {
 
 <template>
   <div class="app-container">
+    <div class="drag-bar"></div>
+    <WindowControls />
     <aside class="sidebar">
       <div class="sidebar-header">
         <h1 class="logo">Pink Music</h1>
@@ -1552,11 +1605,42 @@ onMounted(() => {
       </div>
     </div>
 
-    <div v-if="showPlayerPage && currentTrack" class="player-page" :class="{ active: showPlayerPage }" @click="showPlayerPage = false">
+    <div v-if="showPlayerPage && currentTrack" class="player-page" :class="{ active: showPlayerPage }" @click="closePlayerPage">
       <div class="player-page-content" @click.stop>
-        <button class="back-btn" @click="showPlayerPage = false">
+        <button class="back-btn" @click="closePlayerPage">
           <svg viewBox="0 0 24 24" fill="currentColor" width="24" height="24"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
           <span>返回</span>
+        </button>
+
+        <button
+          class="lyric-toggle-btn"
+          :class="{ active: lyricStore.showLyricPanel }"
+          :title="lyricStore.showLyricPanel ? '隐藏歌词' : '显示歌词'"
+          :aria-label="lyricStore.showLyricPanel ? '隐藏歌词' : '显示歌词'"
+          :aria-pressed="lyricStore.showLyricPanel"
+          @click="toggleLyricPanel"
+        >
+          <svg
+            v-if="lyricStore.showLyricPanel"
+            viewBox="0 0 24 24"
+            fill="currentColor"
+            width="16"
+            height="16"
+            aria-hidden="true"
+          >
+            <path d="M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.43-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7zM2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3 2 4.27z"/>
+          </svg>
+          <svg
+            v-else
+            viewBox="0 0 24 24"
+            fill="currentColor"
+            width="16"
+            height="16"
+            aria-hidden="true"
+          >
+            <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5C21.27 7.61 17 4.5 12 4.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
+          </svg>
+          <span>{{ lyricStore.showLyricPanel ? '隐藏歌词' : '显示歌词' }}</span>
         </button>
 
         <button v-if="currentSeries" class="series-toggle-btn" @click="toggleSeriesPanel">
@@ -1572,6 +1656,12 @@ onMounted(() => {
           <h2>{{ currentTrack.title }}</h2>
           <h3>{{ currentTrack.author }}</h3>
         </div>
+
+        <LyricDisplay
+          v-if="lyricStore.showLyricPanel"
+          :currentTime="currentTime"
+          :onSeek="handleLyricSeek"
+        />
 
         <div class="big-control-buttons">
           <button @click="togglePlayMode" class="big-control-btn" :class="{ active: playMode !== 'order' }" :title="getPlayModeLabel()">
@@ -1609,7 +1699,7 @@ onMounted(() => {
             </div>
             <span class="progress-time">{{ parseDuration(duration) }}</span>
           </div>
-          
+
           <!-- 下载缓存进度 -->
           <div v-if="isDownloading" class="download-progress">
             <div class="download-progress-bar">
@@ -1808,7 +1898,7 @@ onMounted(() => {
         <div v-if="settingsTab === 'about'" class="settings-content about-content">
           <div class="about-logo">
             <span class="logo-text">Pink Music</span>
-            <span class="version">v1.1.0</span>
+            <span class="version">v1.3.0</span>
           </div>
           
           <div class="about-description">

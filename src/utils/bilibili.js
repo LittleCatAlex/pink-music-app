@@ -514,3 +514,15 @@ export function extractBVId(input) {
   const match = input.match(/BV[a-zA-Z0-9]+/)
   return match ? match[0] : null
 }
+
+export function stripHtmlTags(str) {
+  return str.replace(/<[^>]*>/g, '')
+}
+
+export function fixCoverUrl(url) {
+  if (!url) return ''
+  if (url.startsWith('//')) {
+    return 'https:' + url
+  }
+  return url
+}
