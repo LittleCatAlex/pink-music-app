@@ -1,4 +1,5 @@
 <script setup>
+import { ref } from 'vue'
 import { usePlayerStore, usePlaylistStore } from '@/stores'
 import { useAudioPlayer } from '@/composables/useAudioPlayer'
 import { parseDuration } from '@/utils/bilibili'
@@ -6,6 +7,11 @@ import { parseDuration } from '@/utils/bilibili'
 const playerStore = usePlayerStore()
 const playlistStore = usePlaylistStore()
 const { togglePlayPause, playPrevious, playNext, onProgressInput, onProgressChange } = useAudioPlayer()
+
+// 拖动期间禁用 .progress-fill 的 0.1s transition，避免进度条追不上手指
+const isSeeking = ref(false)
+function onSeekStart() { isSeeking.value = true }
+function onSeekEnd() { isSeeking.value = false }
 
 function openPlayerPage() {
   playerStore.setShowPlayerPage(true)
@@ -58,14 +64,17 @@ function addToPlaylist(playlist) {
 
       <div class="progress-container">
         <span class="progress-time">{{ parseDuration(playerStore.currentTime) }}</span>
-        <div class="progress-bar-wrapper">
-          <input 
-            type="range" 
-            min="0" 
-            :max="playerStore.duration || 100" 
-            :value="playerStore.currentTime" 
-            @input="onProgressInput" 
-            @change="onProgressChange" 
+        <div class="progress-bar-wrapper" :class="{ seeking: isSeeking }">
+          <input
+            type="range"
+            min="0"
+            :max="playerStore.duration || 100"
+            :value="playerStore.currentTime"
+            @input="onProgressInput"
+            @change="onProgressChange"
+            @pointerdown="onSeekStart"
+            @pointerup="onSeekEnd"
+            @pointercancel="onSeekEnd"
             class="progress-slider"
           />
           <div class="progress-bar">

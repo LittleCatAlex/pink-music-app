@@ -9,37 +9,33 @@ export function useMusic() {
     searchStore.setIsLoadingRecommended(true)
 
     try {
-      const randomKeywords = ['热门音乐', '流行歌曲', '经典老歌', '电音', '摇滚', '民谣', '说唱', '古风', '轻音乐']
-      const randomKeyword = randomKeywords[Math.floor(Math.random() * randomKeywords.length)]
-
-      let searchResult
-      if (window.electronAPI) {
-        console.log('开始搜索:', randomKeyword)
-        searchResult = await window.electronAPI.searchMusic(randomKeyword, 1, 20)
-        console.log('搜索结果:', searchResult)
+      let feedResult
+      if (window.electronAPI?.getMusicRegionFeed) {
+        // 走 B 站音乐区推荐（tid=1003），避免全站搜索返回擦边视频
+        // 参考 biu-master 的 getRegionFeedRcmd
+        const r = await window.electronAPI.getMusicRegionFeed(1, 20)
+        feedResult = r
+        console.log('[debug] loadRecommendedMusic 音乐区返回 archives:', r?.data?.archives?.length)
       } else {
-        searchResult = { code: -1, message: 'Not available in web mode' }
+        feedResult = { code: -1, message: 'Not available in web mode' }
       }
 
-      if (searchResult.code === 0 && searchResult.data?.result) {
-        const videoResult = searchResult.data.result.find(item => item.result_type === 'video')
-        if (videoResult && videoResult.data?.length > 0) {
-          const musicList = videoResult.data.map((item, index) => ({
-            bvid: item.bvid,
-            aid: item.aid,
-            title: stripHtmlTags(item.title),
-            author: stripHtmlTags(item.author),
-            cover: fixCoverUrl(item.pic),
-            duration: typeof item.duration === 'string' ? parseDuration(item.duration) : item.duration || 180,
-            playCount: item.play || 0,
-            pubdate: item.pubdate
-          }))
+      if (feedResult.code === 0 && feedResult.data?.archives?.length) {
+        const archives = feedResult.data.archives
+        const musicList = archives.map((item) => ({
+          bvid: item.bvid,
+          aid: item.aid,
+          title: stripHtmlTags(item.title || ''),
+          author: item.author?.name || '',
+          cover: fixCoverUrl(item.cover),
+          duration: item.duration || 180,
+          playCount: item.stat?.view || 0,
+          pubdate: item.pubdate,
+          rec_reason: item.rec_reason || ''
+        }))
 
-          const shuffledMusic = [...musicList].sort(() => 0.5 - Math.random())
-          searchStore.setRecommendedMusic(shuffledMusic)
-        } else {
-          searchStore.setRecommendedMusic([])
-        }
+        const shuffledMusic = [...musicList].sort(() => 0.5 - Math.random())
+        searchStore.setRecommendedMusic(shuffledMusic)
       } else {
         searchStore.setRecommendedMusic([])
       }

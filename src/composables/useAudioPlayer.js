@@ -1,4 +1,5 @@
-import { usePlayerStore, usePlaylistStore, useSearchStore } from '@/stores'
+import { usePlayerStore, usePlaylistStore, useSearchStore, useSettingsStore } from '@/stores'
+import { selectAudioUrl } from '@/utils/audio.js'
 
 let audioInstance = null
 let cleanupListenerMap = null
@@ -7,6 +8,7 @@ export function useAudioPlayer() {
   const playerStore = usePlayerStore()
   const playlistStore = usePlaylistStore()
   const searchStore = useSearchStore()
+  const settingsStore = useSettingsStore()
 
   if (!audioInstance) {
     audioInstance = new Audio()
@@ -90,11 +92,7 @@ export function useAudioPlayer() {
         if (musicInfoResult?.code === 0) {
           const playUrlResult = await window.electronAPI.getMusicPlayUrl(music.bvid, music.cid || musicInfoResult.data.cid)
           if (playUrlResult?.code === 0) {
-            if (playUrlResult.data.dash?.audio?.length) {
-              audioSrc = playUrlResult.data.dash.audio[0].baseUrl
-            } else if (playUrlResult.data.durl?.length) {
-              audioSrc = playUrlResult.data.durl[0].url
-            }
+            audioSrc = selectAudioUrl(playUrlResult.data, settingsStore.audioQuality)
           }
         }
       }

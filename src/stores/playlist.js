@@ -54,12 +54,50 @@ export const usePlaylistStore = defineStore('playlist', {
         this.savePlaylists()
       }
     },
+    /**
+     * 删除歌单（仅本地）
+     * - 默认收藏夹（isDefault）不可删
+     * - B 站同步的收藏夹（isBiliFavorite）可以删，但**只删本地副本**，不影响 B 站云端
+     * 返回是否真的删了
+     */
     deletePlaylist(playlistId) {
       const index = this.userPlaylists.findIndex(p => p.id === playlistId)
-      if (index > -1 && !this.userPlaylists[index].isDefault) {
-        this.userPlaylists.splice(index, 1)
-        this.savePlaylists()
-      }
+      if (index < 0) return false
+      const target = this.userPlaylists[index]
+      if (target.isDefault) return false
+      this.userPlaylists.splice(index, 1)
+      this.savePlaylists()
+      return true
+    },
+    mergeBiliFavorites(favorites) {
+      if (!Array.isArray(favorites) || favorites.length === 0) return 0
+      let added = 0
+      favorites.forEach(fav => {
+        if (!fav || !fav.id) return
+        const localId = `bili-fav-${fav.id}`
+        const existing = this.userPlaylists.find(p => p.id === localId)
+        const cover = fav.cover && (fav.cover.startsWith('//') ? `https:${fav.cover}` : fav.cover)
+        if (existing) {
+          existing.name = fav.title || existing.name
+          existing.cover = cover || existing.cover
+          existing.media_count = fav.media_count ?? existing.media_count
+          existing.isBiliFavorite = true
+          existing.source = fav.source || existing.source
+        } else {
+          this.userPlaylists.push({
+            id: localId,
+            name: fav.title || 'B 站收藏夹',
+            cover: cover || '',
+            media_count: fav.media_count || 0,
+            music: [],
+            isBiliFavorite: true,
+            source: fav.source || 'created'
+          })
+          added++
+        }
+      })
+      this.savePlaylists()
+      return added
     }
   }
 })

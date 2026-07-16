@@ -1,6 +1,5 @@
 class BilibiliAPI {
   constructor() {
-    this.cookies = {}
     this.defaultCover = 'https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=400'
     this.defaultCovers = [
       'https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=400',
@@ -27,75 +26,6 @@ class BilibiliAPI {
       processedUrl = 'https://' + processedUrl
     }
     return processedUrl
-  }
-
-  setCookies(cookies) {
-    this.cookies = cookies
-  }
-
-  async getLoginQRCode() {
-    try {
-      const result = await window.electronAPI.getLoginQRCode()
-      if (result.code === 0) {
-        return {
-          success: true,
-          qrcodeKey: result.data.qrcode_key,
-          qrcodeUrl: result.data.url,
-          qrcodeImage: `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(result.data.url)}`
-        }
-      }
-      return { success: false, error: result.message || '生成二维码失败' }
-    } catch (error) {
-      console.error('获取登录二维码失败:', error)
-      return { success: false, error: error.message || '网络错误' }
-    }
-  }
-
-  async checkLoginStatus(qrcodeKey) {
-    try {
-      const result = await window.electronAPI.checkLoginStatus(qrcodeKey)
-      console.log('登录状态检查原始返回:', JSON.stringify(result))
-      if (result.code === 0) {
-        const cookies = this.extractCookiesFromResult(result)
-        return {
-          success: true,
-          isLoggedIn: result.data.code === 0,
-          url: result.data.url,
-          cookies: cookies,
-          code: result.data.code,
-          message: result.data.message
-        }
-      }
-      return { success: false, isLoggedIn: false, error: result.message || '检查登录状态失败' }
-    } catch (error) {
-      console.error('检查登录状态失败:', error)
-      return { success: false, isLoggedIn: false, error: error.message || '网络错误' }
-    }
-  }
-
-  extractCookiesFromResult(result) {
-    const cookies = {}
-    if (result.data.url) {
-      try {
-        const url = new URL(result.data.url)
-        const searchParams = url.searchParams
-        
-        // 提取所有可能的Cookie参数
-        const cookieParams = ['bili_jct', 'DedeUserID', 'DedeUserID__ckMd5', 'SESSDATA']
-        cookieParams.forEach(param => {
-          const value = searchParams.get(param)
-          if (value) {
-            cookies[param] = value
-          }
-        })
-      } catch (e) {
-        console.error('解析Cookie失败:', e)
-      }
-    }
-    if (result.data.refresh_token) {
-      cookies.refresh_token = result.data.refresh_token
-    }
-    return cookies
   }
 
   async searchMusic(keyword, page = 1, pageSize = 30) {
@@ -234,7 +164,6 @@ class BilibiliAPI {
       const result = await window.electronAPI.getMusicPlayUrl(bvid, cid)
       console.log('获取播放地址原始返回:', JSON.stringify(result)?.substring(0, 1000))
       if (result.code === 0) {
-        // 尝试多种可能的数据结构
         if (result.data?.durl?.[0]?.url) {
           console.log('使用durl格式的音频地址')
           return {
@@ -289,55 +218,6 @@ class BilibiliAPI {
       return { success: false, error: result.message || '代理音频失败' }
     } catch (error) {
       console.error('代理音频失败:', error)
-      return { success: false, error: error.message || '网络错误' }
-    }
-  }
-
-  async getFavorites() {
-    try {
-      const result = await window.electronAPI.getFavorites()
-      console.log('获取收藏夹原始返回:', JSON.stringify(result)?.substring(0, 500))
-      if (result.code === 0 && result.data?.list) {
-        return {
-          success: true,
-          favorites: result.data.list.map((item, index) => ({
-            id: item.id,
-            name: item.title,
-            cover: this.processCoverUrl(item.cover, index),
-            media_count: item.media_count || 0
-          }))
-        }
-      }
-      return { success: false, error: result.message || '获取收藏夹失败' }
-    } catch (error) {
-      console.error('获取收藏夹失败:', error)
-      return { success: false, error: error.message || '网络错误' }
-    }
-  }
-
-  async getFavoriteMedia(folderId, page = 1) {
-    try {
-      const result = await window.electronAPI.getFavoriteMedia(folderId, page)
-      console.log('获取收藏夹内容原始返回:', JSON.stringify(result)?.substring(0, 500))
-      if (result.code === 0 && result.data?.media_list) {
-        return {
-          success: true,
-          media: result.data.media_list.map((item, index) => ({
-            bvid: item.bvid,
-            aid: item.id,
-            title: item.title,
-            author: item.upper?.name || '未知作者',
-            cover: this.processCoverUrl(item.cover, index),
-            duration: item.duration || 180,
-            playCount: item.play || 0,
-            pubdate: item.pubtime,
-            description: item.intro || ''
-          }))
-        }
-      }
-      return { success: false, error: result.message || '获取收藏夹内容失败' }
-    } catch (error) {
-      console.error('获取收藏夹内容失败:', error)
       return { success: false, error: error.message || '网络错误' }
     }
   }
@@ -519,10 +399,21 @@ export function stripHtmlTags(str) {
   return str.replace(/<[^>]*>/g, '')
 }
 
-export function fixCoverUrl(url) {
+/**
+ * 修正封面 URL：补 https、附加缩放参数
+ * - B 站 CDN (i0.hdslb.com / i1.hdslb.com / ...) 支持 ?w=xxx 服务端缩放，
+ *   返回 JPEG/WebP 而不是原图大尺寸，能显著减少带宽和图片解码时间
+ * - 已在 URL 里显式指定 w/h 的（如 unsplash ?w=300）保持原样
+ * @param {string} url 原始 URL
+ * @param {number} width 期望宽度（默认 300，适合 200px 卡片，2x DPR 也够清晰）
+ */
+export function fixCoverUrl(url, width = 300) {
   if (!url) return ''
-  if (url.startsWith('//')) {
-    return 'https:' + url
+  let fixed = url.startsWith('//') ? 'https:' + url : url
+  // B 站 CDN 才加 ?w=；unsplash 等第三方 URL 已有自己的参数体系，保留原样
+  if (/hdslb\.com|bilibili\.com/.test(fixed) && !/[?&]w=/.test(fixed)) {
+    const sep = fixed.includes('?') ? '&' : '?'
+    fixed = `${fixed}${sep}w=${width}`
   }
-  return url
+  return fixed
 }

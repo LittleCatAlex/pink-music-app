@@ -5,7 +5,8 @@ export const useSettingsStore = defineStore('settings', {
     showSettings: false,
     activeSettingsTab: 'general',
     downloadDirectory: '',
-    cacheSize: 0
+    cacheSize: 0,
+    audioQuality: localStorage.getItem('pink-music-audio-quality') || 'auto'
   }),
   actions: {
     setShowSettings(show) {
@@ -19,6 +20,10 @@ export const useSettingsStore = defineStore('settings', {
     },
     setCacheSize(size) {
       this.cacheSize = size
+    },
+    setAudioQuality(quality) {
+      this.audioQuality = quality
+      localStorage.setItem('pink-music-audio-quality', quality)
     },
     async loadDownloadDirectory() {
       if (window.electronAPI) {

@@ -1,26 +1,33 @@
 <script setup>
-import { ref, onMounted, computed, watch, nextTick } from 'vue'
-import { parseDuration, formatPlayCount } from './utils/bilibili.js'
+import { ref, onMounted, onUnmounted, computed, watch, nextTick } from 'vue'
+import { parseDuration, formatPlayCount, fixCoverUrl } from './utils/bilibili.js'
+import { selectAudioUrl, selectAudioInfo } from './utils/audio.js'
 import WindowControls from './components/WindowControls.vue'
+import AppDock from './components/AppDock.vue'
+import MineView from './components/MineView.vue'
 import LyricDisplay from './components/player/LyricDisplay.vue'
-import { useLyricStore, usePlayerStore } from './stores'
+import { useLyricStore, usePlayerStore, useSettingsStore, useDownloadStore, useUserStore, usePlaylistStore } from './stores'
+import DownloadManager from './components/DownloadManager.vue'
+import LoginPanel from './components/LoginPanel.vue'
+import { applyLiquidGlass, destroyLiquidGlass } from './composables/useLiquidGlass'
+import { appConfirm } from './utils/confirm'
+
+const topbarRef = ref(null)
+const playerBarRef = ref(null)
+const liquidGlassInstances = new Map()
 
 const lyricStore = useLyricStore()
 const playerStore = usePlayerStore()
+const settingsStore = useSettingsStore()
+const downloadStore = useDownloadStore()
+const userStore = useUserStore()
+const playlistStore = usePlaylistStore()
 
 // Helper function to strip HTML tags
 function stripHtmlTags(html) {
   return html.replace(/<[^>]*>/g, '');
 }
 
-// Helper function to fix cover URL
-function fixCoverUrl(url) {
-  if (!url) return '';
-  if (url.startsWith('//')) {
-    return 'https:' + url;
-  }
-  return url;
-}
 
 // Media Session API for system media controls
 function updateMediaSession() {
@@ -68,32 +75,35 @@ function setupMediaSessionHandlers() {
 
 const currentTheme = ref(localStorage.getItem('pink-music-theme') || 'dark')
 const currentColor = ref(localStorage.getItem('pink-music-color') || 'pink')
-const currentView = ref('home')
+const currentView = computed({
+  get: () => playlistStore.currentView,
+  set: (val) => playlistStore.setCurrentView(val)
+})
 const searchQuery = ref('')
 const isSearching = ref(false)
 const searchResults = ref([])
 const isLoadingSearch = ref(false)
 const recommendedMusic = ref([])
 const isLoadingRecommended = ref(false)
-const userPlaylists = ref([])
-const currentPlaylist = ref(null)
+const currentPlaylist = computed({
+  get: () => playlistStore.currentPlaylist,
+  set: (val) => playlistStore.setCurrentPlaylist(val)
+})
+const isLoadingFavResources = ref(false)
+// 收藏夹分页拉取进度：{ current, total, loaded }
+const favSyncProgress = ref({ current: 0, total: 0, loaded: 0 })
 const currentTrack = ref(null)
 const isPlaying = ref(false)
 const showPlayerPage = ref(false)
 const audioElement = ref(null)
 const currentTime = ref(0)
 const duration = ref(0)
-const isLoggedIn = ref(false)
-const showLoginModal = ref(false)
-const qrcodeImage = ref('')
-const qrcodeKey = ref('')
-const loginStatus = ref('')
-const bilibiliFavorites = ref([])
+const isSeeking = ref(false)
+function onSeekStart() { isSeeking.value = true }
+function onSeekEnd() { isSeeking.value = false }
 const showThemePanel = ref(false)
-const loginError = ref('')
 const isAudioLoading = ref(false)
 const audioError = ref('')
-const playHistory = ref([])
 const bufferedProgress = ref(0)
 const showCreatePlaylistModal = ref(false)
 const newPlaylistName = ref('')
@@ -110,97 +120,8 @@ const currentEpisodeIndex = ref(0)
 const albumArtRef = ref(null)
 const showLyricPanel = ref(true)
 
-// 设置功能状态
-const showSettingsPanel = ref(false)
-const settingsTab = ref('general') // general, about
-const cacheSize = ref(0)
-const isCalculatingCache = ref(false)
-const isClearingCache = ref(false)
-const downloadDirectory = ref('')
-const showClearCacheConfirm = ref(false)
-
-// 格式化文件大小
-function formatFileSize(bytes) {
-  if (bytes === 0) return '0 B'
-  const k = 1024
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
-  const i = Math.floor(Math.log(bytes) / Math.log(k))
-  return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i]
-}
-
-// 计算缓存大小
-async function calculateCacheSize() {
-  if (!window.electronAPI) return
-  isCalculatingCache.value = true
-  try {
-    const result = await window.electronAPI.getCacheSize()
-    if (result.code === 0) {
-      cacheSize.value = result.size
-    }
-  } catch (error) {
-    console.error('计算缓存大小失败:', error)
-  } finally {
-    isCalculatingCache.value = false
-  }
-}
-
-// 清理缓存
-async function clearCache() {
-  if (!window.electronAPI) return
-  isClearingCache.value = true
-  try {
-    const result = await window.electronAPI.clearCache()
-    if (result.code === 0) {
-      alert('缓存清理成功！')
-      cacheSize.value = 0
-    } else {
-      alert('缓存清理失败：' + result.message)
-    }
-  } catch (error) {
-    console.error('清理缓存失败:', error)
-    alert('缓存清理失败：' + error.message)
-  } finally {
-    isClearingCache.value = false
-    showClearCacheConfirm.value = false
-  }
-}
-
-// 选择下载目录
-async function selectDownloadDirectory() {
-  if (!window.electronAPI) return
-  try {
-    const result = await window.electronAPI.selectDownloadDirectory()
-    if (result.code === 0) {
-      downloadDirectory.value = result.path
-      await window.electronAPI.setDownloadDirectory(result.path)
-    }
-  } catch (error) {
-    console.error('选择下载目录失败:', error)
-  }
-}
-
-// 获取当前下载目录
-async function getCurrentDownloadDirectory() {
-  if (!window.electronAPI) return
-  try {
-    const result = await window.electronAPI.getDownloadDirectory()
-    if (result.code === 0) {
-      downloadDirectory.value = result.path
-    }
-  } catch (error) {
-    console.error('获取下载目录失败:', error)
-  }
-}
-
-// 打开GitHub
-async function openGitHub() {
-  if (!window.electronAPI) return
-  try {
-    await window.electronAPI.openGitHub()
-  } catch (error) {
-    console.error('打开GitHub失败:', error)
-  }
-}
+// 设置功能状态 - 已迁移到 MineView，不再需要
+const showLoginPanel = ref(false)
 
 // 点击播放栏封面打开大屏播放
 function openPlayerPageFromCover() {
@@ -247,43 +168,86 @@ function setColor(color) {
 }
 
 function goToHome() {
-  currentView.value = 'home'
+  playlistStore.setCurrentView('home')
   loadRecommendedMusic()
 }
 
 function goToSearch() {
-  currentView.value = 'search'
+  playlistStore.setCurrentView('search')
 }
 
-async function goToPlaylist(playlist) {
-  currentPlaylist.value = playlist
-  currentView.value = 'playlist'
-  
-  // 如果是B站收藏夹，加载收藏夹内容
-  if (playlist.id && !playlist.music) {
-    try {
-      if (window.electronAPI) {
-        const result = await window.electronAPI.getFavoriteMedia(playlist.id)
-        if (result.code === 0 && result.data?.media_list) {
-          currentPlaylist.value.music = result.data.media_list.map((item, index) => ({
-            bvid: item.bvid,
-            aid: item.id,
-            title: item.title,
-            author: item.upper?.name || '未知作者',
-            cover: fixCoverUrl(item.cover),
-            duration: item.duration || 180,
-            playCount: item.play || 0,
-            pubdate: item.pubtime,
-            description: item.intro || ''
-          }))
-        }
-      } else {
-        console.log('收藏夹功能仅在桌面版可用')
-      }
-    } catch (error) {
-      console.error('加载收藏夹内容失败:', error)
+async function loadFavResources() {
+  if (!currentPlaylist.value || !userStore.isLoggedIn) return
+  isLoadingFavResources.value = true
+  favSyncProgress.value = { stage: '', current: 0, total: 0, loaded: 0 }
+  try {
+    // 参考 biu-master 的 getAllFavMedia：先 ids 一次拿全，再 infos 批量查
+    // 总进度按 media_count 估算，1 个 ids + ceil(N/50) 个 infos
+    const totalHint = Number(currentPlaylist.value.media_count) || 0
+    const totalChunks = totalHint > 0 ? 1 + Math.ceil(totalHint / 50) : 1
+    favSyncProgress.value = {
+      stage: 'ids',
+      current: 0,
+      total: totalChunks,
+      loaded: 0
     }
+    const added = await userStore.loadAllFavoriteResources(
+      currentPlaylist.value,
+      playlistStore,
+      {
+        onProgress: ({ stage, current, total, loaded }) => {
+          favSyncProgress.value = { stage, current, total, loaded }
+        }
+      }
+    )
+    if (added === 0) {
+      const detail = userStore._lastFavError || '请稍后重试'
+      alert(`未拉取到新视频（${detail}）。可尝试重新登录 B 站后再试。`)
+    } else {
+      // 同步刷新 currentPlaylist 引用，让视图立即看到新歌曲
+      currentPlaylist.value = playlistStore.userPlaylists.find(p => p.id === currentPlaylist.value.id) || currentPlaylist.value
+    }
+  } catch (error) {
+    console.error('加载收藏夹内容失败:', error)
+    alert('加载失败：' + (error?.message || '未知错误'))
+  } finally {
+    isLoadingFavResources.value = false
+    favSyncProgress.value = { stage: '', current: 0, total: 0, loaded: 0 }
   }
+}
+
+function goToPlaylist(playlist) {
+  playlistStore.setCurrentPlaylist(playlist)
+  playlistStore.setCurrentView('playlist')
+}
+
+function backToPlaylistList() {
+  playlistStore.setCurrentPlaylist(null)
+}
+
+async function confirmDeletePlaylist(playlist) {
+  if (!playlist) return
+  if (playlist.isDefault) return
+  const songCount = playlist.music?.length || playlist.media_count || 0
+  // B 站同步的收藏夹删的是本地副本，B 站云端不受影响——文案上明确告知
+  const detail = playlist.isBiliFavorite
+    ? `该歌单包含 ${songCount} 首音乐，此操作不可恢复。\n（仅删除本地副本，不会影响 B 站云端）`
+    : `该歌单包含 ${songCount} 首音乐，此操作不可恢复。`
+  const ok = await appConfirm({
+    title: '删除歌单',
+    message: `确定要删除歌单「${playlist.name}」吗？`,
+    detail,
+    confirmText: '删除',
+    cancelText: '取消'
+  })
+  if (!ok) return
+  deletePlaylist(playlist)
+}
+
+function loadFavResourcesFor(playlist) {
+  playlistStore.setCurrentPlaylist(playlist)
+  playlistStore.setCurrentView('playlist')
+  loadFavResources()
 }
 
 async function loadRecommendedMusic() {
@@ -424,6 +388,14 @@ function getNextMusicIndex() {
 
 async function playMusic(music) {
   console.log('开始播放:', music.title)
+  // 没有 bvid 且无 favId 的内容（如纯音频）暂时不支持直接播放
+  if (!music.bvid && !music.favId) {
+    audioError.value = '该收藏内容暂不支持播放'
+    playerStore.setAudioError(audioError.value)
+    isAudioLoading.value = false
+    playerStore.setIsAudioLoading(false)
+    return
+  }
   currentTrack.value = music
   // 同步到 playerStore，LyricDisplay 监听的是 playerStore.currentTrack
   playerStore.setCurrentTrack(music)
@@ -439,9 +411,6 @@ async function playMusic(music) {
   duration.value = music.duration || 180
   currentTime.value = 0
   bufferedProgress.value = 0
-
-  // 添加到播放历史
-  addToPlayHistory(music)
 
   // 尝试加载视频合集
   loadVideoSeries(music.bvid)
@@ -486,13 +455,8 @@ async function playMusic(music) {
       if (playUrlResult?.code === 0) {
         console.log('获取到播放地址')
         
-        // 从DASH格式中获取音频地址
-        if (playUrlResult.data.dash && playUrlResult.data.dash.audio && playUrlResult.data.dash.audio.length > 0) {
-          audioSrc = playUrlResult.data.dash.audio[0].baseUrl
-        } else if (playUrlResult.data.durl && playUrlResult.data.durl.length > 0) {
-          // 回退到FLV格式
-          audioSrc = playUrlResult.data.durl[0].url
-        }
+        // 根据设置选择音频流
+        audioSrc = selectAudioUrl(playUrlResult.data, settingsStore.audioQuality)
         
         console.log('使用音频地址:', audioSrc)
       }
@@ -566,8 +530,9 @@ async function playMusic(music) {
     playerStore.setIsAudioLoading(false)
   }
 
-  showPlayerPage.value = true
-  playerStore.setShowPlayerPage(true)
+  // 之前这里会强制 showPlayerPage=true 自动跳到大屏播放页，
+  // 改成"不自动跳"：点击播放只让底部播放栏出现 + 播放当前曲目。
+  // 用户需要大屏视图时手动点播放栏封面即可（见 openPlayerPageFromCover）。
 }
 
 function updateBufferedProgress() {
@@ -896,12 +861,13 @@ function createPlaylist() {
 
 function confirmCreatePlaylist() {
   if (newPlaylistName.value.trim()) {
-    userPlaylists.value.push({
-      id: Date.now(),
+    const newId = Date.now()
+    playlistStore.userPlaylists.push({
+      id: newId,
       name: newPlaylistName.value.trim(),
       music: []
     })
-    savePlaylists()
+    playlistStore.savePlaylists()
     showCreatePlaylistModal.value = false
   }
 }
@@ -925,7 +891,7 @@ function addToPlaylist(playlist) {
   const exists = playlist.music.some(m => m.bvid === music.bvid && m.cid === music.cid)
   if (!exists) {
     playlist.music.push(music)
-    savePlaylists()
+    playlistStore.savePlaylists()
   }
   showAddToPlaylistModal.value = false
 }
@@ -933,8 +899,7 @@ function addToPlaylist(playlist) {
 async function downloadMusic(music) {
   try {
     isAudioLoading.value = true
-    
-    // Get music info if needed
+
     let musicInfoResult
     if (!music.cid) {
       musicInfoResult = await window.electronAPI.getMusicInfo(music.bvid)
@@ -943,27 +908,30 @@ async function downloadMusic(music) {
       }
     }
     const cid = music.cid || musicInfoResult?.data?.cid
-    
-    // Get play URL
+
     const playUrlResult = await window.electronAPI.getMusicPlayUrl(music.bvid, cid)
     if (playUrlResult.code !== 0) {
       throw new Error('获取播放地址失败')
     }
-    
-    const audioUrl = playUrlResult.data.dash.audio[0].baseUrl
-    if (!audioUrl) {
+
+    const audioInfo = selectAudioInfo(playUrlResult.data, settingsStore.audioQuality)
+    if (!audioInfo?.url) {
       throw new Error('未找到音频地址')
     }
-    
-    // Download the audio
-    const downloadResult = await window.electronAPI.downloadAudio(audioUrl, `${music.title} - ${music.author}`)
-    if (downloadResult.code === 0) {
-      console.log('下载成功:', downloadResult.data)
-      // Show success message
-      alert('下载成功！文件保存在：' + downloadResult.data)
-    } else {
-      throw new Error(downloadResult.message || '下载失败')
-    }
+    const audioUrl = audioInfo.url
+    const audioCodecs = audioInfo.codecs
+
+    downloadStore.setShowDownloadManager(true)
+    await downloadStore.addTask({
+      audioUrl,
+      fileName: `${music.title} - ${music.author}`,
+      bvid: music.bvid,
+      cid,
+      title: music.title,
+      author: music.author,
+      quality: settingsStore.audioQuality,
+      audioCodecs
+    })
   } catch (error) {
     console.error('下载音乐失败:', error)
     alert('下载失败：' + error.message)
@@ -986,34 +954,18 @@ async function openDownloadFolder() {
   }
 }
 
-function savePlaylists() {
-  localStorage.setItem('pink-music-playlists', JSON.stringify(userPlaylists.value))
-}
-
 function loadPlaylists() {
-  const saved = localStorage.getItem('pink-music-playlists')
-  if (saved) {
-    userPlaylists.value = JSON.parse(saved)
-  }
-  
-  const favoritesExists = userPlaylists.value.some(p => p.id === 'favorites')
-  if (!favoritesExists) {
-    userPlaylists.value.unshift({
-      id: 'favorites',
-      name: '收藏夹',
-      music: [],
-      isDefault: true
-    })
-    savePlaylists()
-  }
+  playlistStore.loadPlaylists()
 }
 
 function deletePlaylist(playlist) {
-  if (playlist.isDefault) return
-  const index = userPlaylists.value.findIndex(p => p.id === playlist.id)
-  if (index > -1) {
-    userPlaylists.value.splice(index, 1)
-    savePlaylists()
+  if (!playlist || playlist.isDefault) return
+  const ok = playlistStore.deletePlaylist(playlist.id)
+  if (!ok) return
+  // 如果删的就是当前正在查看的歌单，需要清理 + 跳回列表
+  if (currentPlaylist.value && currentPlaylist.value.id === playlist.id) {
+    playlistStore.setCurrentPlaylist(null)
+    backToPlaylistList()
   }
 }
 
@@ -1027,6 +979,42 @@ function exportPlaylist(playlist) {
   a.download = `${playlist.name || '歌单'}.json`
   a.click()
   URL.revokeObjectURL(url)
+}
+
+function openLoginPanel() {
+  showLoginPanel.value = true
+}
+
+function closeLoginPanel() {
+  showLoginPanel.value = false
+}
+
+async function handleLoginSuccess() {
+  // 登录成功后自动尝试拉取一次用户信息（防止轮询未触发）
+  if (!userStore.userInfo) {
+    await userStore.fetchUserInfo()
+  }
+  // 静默同步一次收藏夹，让用户进入应用时即可看到
+  if (userStore.userInfo?.mid) {
+    try {
+      await userStore.syncFavorites(playlistStore)
+    } catch (error) {
+      console.error('自动同步收藏夹失败:', error)
+    }
+  }
+}
+
+async function handleSyncFavorites() {
+  if (!userStore.isLoggedIn || !userStore.userInfo?.mid) {
+    alert('请先登录 B 站账号')
+    return
+  }
+  const added = await userStore.syncFavorites(playlistStore)
+  if (added === 0) {
+    alert('收藏夹已为最新或没有可同步的项')
+  } else {
+    alert(`已同步 ${added} 个收藏夹到我的歌单`)
+  }
 }
 
 function importPlaylist() {
@@ -1047,8 +1035,8 @@ function importPlaylist() {
             cover: imported.cover || '',
             music: imported.music
           }
-          userPlaylists.value.push(newPlaylist)
-          savePlaylists()
+          playlistStore.userPlaylists.push(newPlaylist)
+          playlistStore.savePlaylists()
         }
       } catch (error) {
         console.error('导入歌单失败:', error)
@@ -1059,192 +1047,100 @@ function importPlaylist() {
   input.click()
 }
 
-function savePlayHistory() {
-  // 只保存最近50首
-  const historyToSave = playHistory.value.slice(0, 50)
-  localStorage.setItem('pink-music-history', JSON.stringify(historyToSave))
-}
-
-function loadPlayHistory() {
-  const saved = localStorage.getItem('pink-music-history')
-  if (saved) {
-    playHistory.value = JSON.parse(saved)
-  }
-}
-
-function addToPlayHistory(music) {
-  // 移除重复项
-  playHistory.value = playHistory.value.filter(item => item.bvid !== music.bvid)
-  // 添加到开头
-  playHistory.value.unshift(music)
-  // 保存到本地存储
-  savePlayHistory()
-}
-
-function clearPlayHistory() {
-  playHistory.value = []
-  savePlayHistory()
-}
-
-async function showLoginQRCode() {
-  showLoginModal.value = true
-  loginStatus.value = '生成二维码中...'
-  loginError.value = ''
-
-  try {
-    // 调用Electron的登录二维码生成功能
-    if (window.electronAPI) {
-      const result = await window.electronAPI.getLoginQRCode()
-      if (result.code === 0) {
-        qrcodeImage.value = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(result.data.url)}`
-        qrcodeKey.value = result.data.qrcode_key
-        loginStatus.value = '请使用B站客户端扫描二维码'
-        startLoginPolling()
-      } else {
-        loginStatus.value = ''
-        loginError.value = result.message || '生成二维码失败'
-      }
-    } else {
-      loginStatus.value = ''
-      loginError.value = '登录功能仅在桌面版可用'
-    }
-  } catch (error) {
-    console.error('获取登录二维码失败:', error)
-    loginStatus.value = ''
-    loginError.value = '网络错误'
-  }
-}
-
-function startLoginPolling() {
-  const pollInterval = setInterval(async () => {
-    if (!qrcodeKey.value) {
-      clearInterval(pollInterval)
-      return
-    }
-
-    try {
-      if (window.electronAPI) {
-        const result = await window.electronAPI.checkLoginStatus(qrcodeKey.value)
-        console.log('登录状态检查:', result)
-
-        if (result.code === 0) {
-          if (result.data.code === 0) {
-            loginStatus.value = '登录成功!'
-            isLoggedIn.value = true
-            if (result.data.url) {
-              // 提取Cookies
-              try {
-                const url = new URL(result.data.url)
-                const searchParams = url.searchParams
-                const cookies = {}
-                const cookieParams = ['bili_jct', 'DedeUserID', 'DedeUserID__ckMd5', 'SESSDATA']
-                cookieParams.forEach(param => {
-                  const value = searchParams.get(param)
-                  if (value) {
-                    cookies[param] = value
-                  }
-                })
-                if (cookies.bili_jct) {
-                  await window.electronAPI.setCookies(cookies)
-                }
-              } catch (e) {
-                console.error('解析Cookie失败:', e)
-              }
-            }
-            await loadBilibiliFavorites()
-            setTimeout(() => {
-              showLoginModal.value = false
-            }, 1000)
-            clearInterval(pollInterval)
-          } else {
-            switch (result.data.code) {
-              case 86101:
-                loginStatus.value = '请扫描二维码'
-                break
-              case 86090:
-                loginStatus.value = '请在手机上确认登录'
-                break
-              case 86038:
-                loginStatus.value = ''
-                loginError.value = '二维码已失效，请重新生成'
-                clearInterval(pollInterval)
-                break
-              default:
-                loginStatus.value = result.data.message || '等待扫码...'
-            }
-          }
-        } else {
-          loginStatus.value = ''
-          loginError.value = result.message || '网络错误'
-          clearInterval(pollInterval)
-        }
-      } else {
-        loginStatus.value = ''
-        loginError.value = '登录功能仅在桌面版可用'
-        clearInterval(pollInterval)
-      }
-    } catch (error) {
-      console.error('检查登录状态失败:', error)
-      loginError.value = '网络错误'
-      clearInterval(pollInterval)
-    }
-  }, 2000)
-}
-
-function logout() {
-  isLoggedIn.value = false
-  bilibiliFavorites.value = []
-  if (window.electronAPI) {
-    window.electronAPI.setCookies({})
-  }
-}
-
-async function refreshBilibiliFavorites() {
-  if (isLoggedIn.value) {
-    await loadBilibiliFavorites()
-  }
-}
-
-async function loadBilibiliFavorites() {
-  console.log('加载B站收藏夹')
-  try {
-    if (window.electronAPI) {
-      const result = await window.electronAPI.getFavorites()
-      console.log('收藏夹结果:', result)
-      if (result.code === 0 && result.data?.list) {
-        bilibiliFavorites.value = result.data.list.map((item, index) => ({
-          id: item.id,
-          name: item.title,
-          cover: fixCoverUrl(item.cover),
-          media_count: item.media_count || 0
-        }))
-      } else {
-        console.log('获取收藏夹失败:', result.message || '无收藏夹数据')
-        bilibiliFavorites.value = []
-      }
-    } else {
-      console.log('收藏夹功能仅在桌面版可用')
-      bilibiliFavorites.value = []
-    }
-  } catch (error) {
-    console.error('加载收藏夹失败:', error)
-    bilibiliFavorites.value = []
-  }
-}
-
 watch(showPlayerPage, (newVal) => {
   // CSS 动画现在由 .player-page.active 类自动控制
 })
 
-onMounted(() => {
+// 实时同步播放器栏显隐状态到 document 属性，让 dock / main-content 立即响应
+function syncPlayerState(track) {
+  if (track) {
+    document.documentElement.setAttribute('data-has-player', '')
+  } else {
+    document.documentElement.removeAttribute('data-has-player')
+  }
+}
+
+watch(
+  () => playerStore.currentTrack,
+  (track) => syncPlayerState(track),
+  { immediate: true, deep: true }
+)
+
+// 监听 MineView 等子组件派发的事件
+function handlePinkMusicEvent(event) {
+  const type = event.type
+  if (type === 'pink-music:play-track') {
+    playMusic(event.detail)
+  } else if (type === 'pink-music:open-download') {
+    downloadStore.setShowDownloadManager(true)
+  } else if (type === 'pink-music:open-login') {
+    showLoginPanel.value = true
+  } else if (type === 'pink-music:playlist-deleted') {
+    // 侧边栏/AppDock 等不在父组件作用域的删除入口派发的事件
+    // 如果删的就是当前正在查看的歌单，需要清理 + 跳回列表
+    const deletedId = event.detail?.id
+    if (deletedId && currentPlaylist.value && currentPlaylist.value.id === deletedId) {
+      playlistStore.setCurrentPlaylist(null)
+      backToPlaylistList()
+    }
+  }
+}
+
+// Liquid Glass：应用 SVG feDisplacementMap 实现的液体玻璃效果
+function setupLiquidGlass() {
+  if (topbarRef.value && !liquidGlassInstances.has('topbar')) {
+    const inst = applyLiquidGlass(topbarRef.value, {
+      depth: 0.06,
+      edgeSoftness: 0.4,
+      backdrop: 'blur(1.5px) contrast(1.2) brightness(1.05) saturate(1.3)'
+    })
+    if (inst) liquidGlassInstances.set('topbar', inst)
+  }
+  if (playerBarRef.value && !liquidGlassInstances.has('playerBar')) {
+    const inst = applyLiquidGlass(playerBarRef.value, {
+      depth: 0.08,
+      edgeSoftness: 0.35,
+      backdrop: 'blur(2px) contrast(1.25) brightness(1.05) saturate(1.4)'
+    })
+    if (inst) liquidGlassInstances.set('playerBar', inst)
+  }
+}
+
+onMounted(async () => {
   document.documentElement.setAttribute('data-theme', currentTheme.value)
   document.documentElement.setAttribute('data-color', currentColor.value)
   loadPlaylists()
-  loadPlayHistory()
   loadRecommendedMusic()
   setupMediaSessionHandlers()
-  getCurrentDownloadDirectory()
-  calculateCacheSize()
+  downloadStore.loadTasks()
+  downloadStore.registerProgressListener()
+  window.addEventListener('pink-music:play-track', handlePinkMusicEvent)
+  window.addEventListener('pink-music:open-download', handlePinkMusicEvent)
+  window.addEventListener('pink-music:open-login', handlePinkMusicEvent)
+  window.addEventListener('pink-music:playlist-deleted', handlePinkMusicEvent)
+  // 启动时尝试恢复登录态：先检查主进程是否持有 B 站 cookie，再拉取用户信息
+  try {
+    const restored = await userStore.restoreFromCookies()
+    if (!restored) {
+      await userStore.fetchUserInfo()
+    }
+  } catch (error) {
+    console.error('恢复登录态失败:', error)
+  }
+  // 等 DOM 稳定后初始化 liquid glass，并监听播放器栏显隐
+  await nextTick()
+  setupLiquidGlass()
+  watch(playerBarRef, (val) => {
+    if (val) setupLiquidGlass()
+  })
+})
+
+onUnmounted(() => {
+  window.removeEventListener('pink-music:play-track', handlePinkMusicEvent)
+  window.removeEventListener('pink-music:open-download', handlePinkMusicEvent)
+  window.removeEventListener('pink-music:open-login', handlePinkMusicEvent)
+  liquidGlassInstances.forEach((inst) => destroyLiquidGlass(inst.id))
+  liquidGlassInstances.clear()
 })
 </script>
 
@@ -1252,136 +1148,71 @@ onMounted(() => {
   <div class="app-container">
     <div class="drag-bar"></div>
     <WindowControls />
-    <aside class="sidebar">
-      <div class="sidebar-header">
-        <h1 class="logo">Pink Music</h1>
-        <button class="theme-toggle" @click="toggleTheme" title="主题设置">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
-            <path d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+    <header ref="topbarRef" class="topbar">
+      <div class="topbar-left">
+        <h1 class="brand">Pink Music</h1>
+      </div>
+      <div class="topbar-right">
+        <button class="topbar-btn" @click="toggleTheme" title="主题设置">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18" v-if="currentTheme === 'dark'">
+            <path d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/>
+          </svg>
+          <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18" v-else>
+            <path d="M12 3c-4.97 0-9 4.03-9 9s4.03 9 9 9 9-4.03 9-9c0-.46-.04-.92-.1-1.36-.98 1.37-2.58 2.26-4.4 2.26-2.98 0-5.4-2.42-5.4-5.4 0-1.81.89-3.42 2.26-4.4-.44-.06-.9-.1-1.36-.1z"/>
           </svg>
         </button>
+        <button
+          v-if="userStore.hasLoginCookie"
+          class="topbar-btn topbar-user"
+          @click="openLoginPanel"
+          :class="{ active: showLoginPanel }"
+          title="已登录 B 站账号"
+        >
+          <img
+            :src="userStore.userInfo?.face"
+            class="topbar-avatar"
+            alt=""
+            @error="$event.target.style.display='none'"
+          />
+          <span>{{ userStore.userInfo?.uname || '已登录' }}</span>
+        </button>
+        <button v-else class="topbar-btn topbar-login" @click="openLoginPanel" title="登录 B 站">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
+            <path d="M11 7L9.6 8.4l2.6 2.6H2v2h10.2l-2.6 2.6L11 17l5-5-5-5zm9 12h-8v2h8c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-8v2h8v14z"/>
+          </svg>
+          <span>登录 B 站</span>
+        </button>
       </div>
-
-      <nav>
-        <button class="nav-item" @click="goToHome" :class="{ active: currentView === 'home' }">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
-          <span>首页</span>
-        </button>
-
-        <button class="nav-item" @click="goToSearch" :class="{ active: currentView === 'search' }">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
-          <span>搜索</span>
-        </button>
-
-        <div class="nav-section">
-          <h3>我的歌单</h3>
-          <div class="playlist-nav-buttons">
-            <button class="nav-item" @click="createPlaylist">
-              <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
-              <span>创建</span>
-            </button>
-            <button class="nav-item" @click="importPlaylist">
-              <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/></svg>
-              <span>导入</span>
-            </button>
-          </div>
-          <button class="nav-item" @click="openDownloadFolder">
-            <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
-            <span>下载</span>
-          </button>
-          <button
-            v-for="playlist in userPlaylists"
-            :key="playlist.id"
-            class="playlist-item"
-            @click="goToPlaylist(playlist)"
-            :class="{ playing: currentPlaylist?.id === playlist.id && currentView === 'playlist', default: playlist.isDefault }"
-          >
-            <span>{{ playlist.name }}</span>
-            <span class="playlist-count">{{ playlist.music.length }}</span>
-            <button 
-              v-if="!playlist.isDefault" 
-              class="delete-playlist-btn" 
-              @click.stop="deletePlaylist(playlist)"
-              title="删除歌单"
-            >
-              <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
-            </button>
-          </button>
-
-          <!-- <div v-if="isLoggedIn" class="nav-section">
-            <div class="section-header">
-              <h3>B站收藏夹</h3>
-              <button class="refresh-btn" @click="refreshBilibiliFavorites" title="刷新收藏夹">
-                <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14">
-                  <path d="M17.65 6.35A7.958 7.958 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
-                </svg>
-              </button>
-            </div>
-            <button
-              v-for="favorite in bilibiliFavorites"
-              :key="favorite.id"
-              class="playlist-item"
-              @click="goToPlaylist(favorite)"
-              :class="{ playing: currentPlaylist?.id === favorite.id && currentView === 'playlist' }"
-            >
-              <span>{{ favorite.name }}</span>
-              <span class="playlist-count">{{ favorite.media_count }}</span>
-            </button>
-          </div> -->
-
-          <div class="nav-section">
-            <div class="section-header">
-              <h3>播放历史</h3>
-              <button v-if="playHistory.length > 0" class="refresh-btn" @click="clearPlayHistory" title="清空历史">
-                <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14">
-                  <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
-                </svg>
-              </button>
-            </div>
-            <button
-              v-if="playHistory.length === 0"
-              class="playlist-item disabled"
-            >
-              <span>暂无播放历史</span>
-            </button>
-            <button
-              v-for="(music, index) in playHistory.slice(0, 5)"
-              :key="music.bvid"
-              class="playlist-item"
-              @click="playMusic(music)"
-            >
-              <span class="text-truncate">{{ music.title }}</span>
-              <span class="playlist-count">{{ index + 1 }}</span>
-            </button>
-            <div v-if="playHistory.length > 5" class="history-more">
-              <span>还有 {{ playHistory.length - 5 }} 首</span>
-            </div>
-          </div>
-        </div>
-
-        <!-- <button class="nav-item" @click="isLoggedIn ? logout() : showLoginQRCode()">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
-          <span>{{ isLoggedIn ? '退出登录' : '登录B站' }}</span>
-        </button> -->
-        
-        <div class="sidebar-footer">
-          <button class="nav-item settings-btn" @click="showSettingsPanel = !showSettingsPanel" :class="{ active: showSettingsPanel }">
-            <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M19.43 12.98c.04-.32.07-.64.07-.98s-.03-.66-.07-.98l2.11-1.65c.19-.15.24-.42.12-.64l-2-3.46c-.12-.22-.39-.3-.61-.22l-2.49 1c-.52-.39-1.08-.7-1.66-.94l-.38-2.65c-.03-.24-.24-.42-.48-.42h-4c-.24 0-.45.18-.48.42l-.38 2.65c-.58.24-1.14.55-1.66.94l-2.49-1c-.22-.08-.49 0-.61.22l-2 3.46c-.12.22-.07.49.12.64l2.11 1.65c-.04.32-.07.64-.07.98s.03.66.07.98l-2.11 1.65c-.19.15-.24.42-.12.64l2 3.46c.12.22.39.3.61.22l2.49-1c.52.39 1.08.7 1.66.94l.38 2.65c.03.24.24.42.48.42h4c.24 0 .45-.18.48-.42l.38-2.65c.58-.24 1.14-.55 1.66-.94l2.49 1c.22.08.49 0 .61-.22l2-3.46c.12-.22.07-.49-.12-.64l-2.11-1.65zm-7.43 2.52c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></svg>
-            <span>设置</span>
-          </button>
-        </div>
-      </nav>
-    </aside>
+    </header>
 
     <main class="main-content">
-      <section v-if="currentView === 'home'" class="home-section">
+      <Transition name="page" mode="out-in">
+        <section v-if="currentView === 'home'" key="home" class="home-section">
         <div class="hero-section">
           <h2 class="text-gradient">欢迎使用 Pink Music</h2>
           <p>从 B 站发现并播放你喜欢的音乐</p>
         </div>
 
         <div class="recommended-section">
-          <h3>推荐音乐</h3>
+          <div class="section-header">
+            <h3>推荐音乐</h3>
+            <button
+              class="refresh-btn"
+              @click="loadRecommendedMusic"
+              :disabled="isLoadingRecommended"
+              title="刷新推荐"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="currentColor"
+                width="18"
+                height="18"
+                :class="{ spinning: isLoadingRecommended }"
+              >
+                <path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
+              </svg>
+            </button>
+          </div>
           <div v-if="isLoadingRecommended" class="loading">
             <div class="loading-spinner"></div>
             <p>加载中...</p>
@@ -1391,9 +1222,10 @@ onMounted(() => {
           </div>
           <div v-else class="card-grid">
             <div
-              v-for="music in recommendedMusic"
+              v-for="(music, index) in recommendedMusic"
               :key="music.bvid"
               class="music-card"
+              :style="{ '--card-index': index }"
               @click="playMusic(music)"
             >
               <div class="card-cover">
@@ -1418,13 +1250,13 @@ onMounted(() => {
         </div>
       </section>
 
-      <section v-else-if="currentView === 'search'" class="search-section">
+      <section v-else-if="currentView === 'search'" key="search" class="search-section">
         <div class="header">
           <div class="search-box">
-            <input
+            <input 
               type="text"
               v-model="searchQuery"
-              placeholder="搜索音乐..."
+              placeholder="搜索音乐..." 
               @keyup.enter="handleSearch"
             >
             <button @click="handleSearch">
@@ -1433,6 +1265,7 @@ onMounted(() => {
           </div>
         </div>
 
+        <!-- 搜索结果（仅在搜索时显示在中间） -->
         <div v-if="isLoadingSearch" class="loading">
           <div class="loading-spinner"></div>
           <p>搜索中...</p>
@@ -1442,9 +1275,10 @@ onMounted(() => {
         </div>
         <div v-else-if="isSearching" class="card-grid">
           <div
-            v-for="music in searchResults"
+            v-for="(music, index) in searchResults"
             :key="music.bvid"
             class="music-card"
+            :style="{ '--card-index': index }"
             @click="playMusic(music)"
           >
             <div class="card-cover">
@@ -1468,44 +1302,230 @@ onMounted(() => {
         </div>
       </section>
 
-      <section v-else-if="currentView === 'playlist'" class="playlist-section">
-        <div class="header">
-          <div class="playlist-cover">
-            <img :src="currentPlaylist?.cover || 'https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=400'" :alt="currentPlaylist?.name">
+      <section v-else-if="currentView === 'playlist'" key="playlist" class="playlist-page">
+        <!-- 歌单列表 -->
+        <div v-if="!currentPlaylist" class="playlist-list-view">
+          <div class="playlist-list-header">
+            <div>
+              <span class="playlist-label">我的歌单</span>
+              <h2 class="playlist-list-title">全部歌单</h2>
+              <p class="playlist-list-subtitle">共 {{ playlistStore.userPlaylists.length }} 个歌单</p>
+            </div>
+            <div class="playlist-list-actions">
+              <button @click="createPlaylist" class="playlist-action-btn primary" title="新建歌单">
+                <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+                <span>新建歌单</span>
+              </button>
+              <button @click="importPlaylist" class="playlist-action-btn" title="导入歌单">
+                <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/></svg>
+                <span>导入歌单</span>
+              </button>
+              <button @click="handleSyncFavorites" class="playlist-action-btn" title="从 B 站收藏夹同步">
+                <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
+                <span>同步收藏夹</span>
+              </button>
+            </div>
           </div>
-          <div class="playlist-info">
-            <h2>{{ currentPlaylist?.name }}</h2>
-            <p>{{ currentPlaylist?.music?.length || currentPlaylist?.media_count || 0 }} 首音乐</p>
+
+          <div v-if="playlistStore.userPlaylists.length === 0" class="playlist-empty">
+            <div class="empty-icon">
+              <svg viewBox="0 0 24 24" fill="currentColor" width="48" height="48">
+                <path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/>
+              </svg>
+            </div>
+            <p>还没有歌单</p>
+            <div class="empty-actions">
+              <button @click="createPlaylist" class="load-fav-btn">新建一个歌单</button>
+              <button @click="importPlaylist" class="playlist-action-btn">从 JSON 导入</button>
+            </div>
           </div>
-          <div class="playlist-actions" v-if="!currentPlaylist?.id || currentPlaylist?.music">
-            <button @click="exportPlaylist(currentPlaylist)" class="playlist-action-btn" title="导出歌单">
-              <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
-              <span>导出</span>
-            </button>
+
+          <div v-else class="playlist-cards-grid">
+            <div
+              v-for="(playlist, index) in playlistStore.userPlaylists"
+              :key="playlist.id"
+              class="playlist-card-item"
+              :class="{ 'is-bili-fav': playlist.isBiliFavorite, 'is-default': playlist.isDefault }"
+              :style="{ '--card-index': index }"
+              @click="goToPlaylist(playlist)"
+            >
+              <div class="playlist-card-cover">
+                <img
+                  :src="fixCoverUrl(playlist.cover, 300) || 'https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=300'"
+                  :alt="playlist.name"
+                  loading="lazy"
+                  decoding="async"
+                  @error="$event.target.src='https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=300'"
+                />
+                <div class="playlist-card-overlay">
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="32" height="32">
+                    <path d="M8 5v14l11-7z"/>
+                  </svg>
+                </div>
+                <span v-if="playlist.isBiliFavorite" class="bili-fav-badge">B站</span>
+                <span v-if="playlist.isDefault" class="default-badge">默认</span>
+              </div>
+              <div class="playlist-card-body">
+                <h4 class="playlist-card-name">{{ playlist.name }}</h4>
+                <p class="playlist-card-count">{{ playlist.music?.length || playlist.media_count || 0 }} 首</p>
+              </div>
+              <div class="playlist-card-toolbar">
+                <button
+                  v-if="!playlist.isDefault"
+                  class="card-tool-btn"
+                  @click.stop="exportPlaylist(playlist)"
+                  title="导出"
+                >
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+                </button>
+                <button
+                  v-if="playlist.isBiliFavorite"
+                  class="card-tool-btn"
+                  @click.stop="loadFavResourcesFor(playlist)"
+                  :disabled="isLoadingFavResources"
+                  title="加载收藏夹内容"
+                >
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M19 8l-4 4h3c0 3.31-2.69 6-6 6-1.01 0-1.97-.25-2.8-.7l-1.46 1.46C8.97 19.54 10.43 20 12 20c4.42 0 8-3.58 8-8h3l-4-4zM6 12c0-3.31 2.69-6 6-6 1.01 0 1.97.25 2.8.7l1.46-1.46C15.03 4.46 13.57 4 12 4c-4.42 0-8 3.58-8 8H1l4 4 4-4H6z"/></svg>
+                </button>
+                <button
+                  v-if="!playlist.isDefault"
+                  class="card-tool-btn danger"
+                  @click.stop="confirmDeletePlaylist(playlist)"
+                  title="删除"
+                >
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1-1H5v2h14V4z"/></svg>
+                </button>
+              </div>
+            </div>
           </div>
         </div>
 
-        <div class="playlist-tracks">
+        <!-- 歌单详情 -->
+        <div v-else>
+          <button @click="backToPlaylistList" class="back-link">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+            <span>返回歌单列表</span>
+          </button>
+        <div class="playlist-header">
+          <div class="playlist-cover">
+            <img
+              :src="currentPlaylist?.cover || 'https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=400'"
+              :alt="currentPlaylist?.name"
+              @error="$event.target.src='https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=400'"
+            />
+            <div class="playlist-cover-overlay">
+              <svg viewBox="0 0 24 24" fill="currentColor" width="32" height="32">
+                <path d="M8 5v14l11-7z"/>
+              </svg>
+            </div>
+          </div>
+          <div class="playlist-meta">
+            <span class="playlist-label">歌单</span>
+            <h2 class="playlist-name">{{ currentPlaylist?.name }}</h2>
+            <div class="playlist-stats">
+              <span>{{ currentPlaylist?.music?.length || currentPlaylist?.media_count || 0 }} 首音乐</span>
+              <span v-if="currentPlaylist?.isBiliFavorite" class="playlist-tag">B 站收藏夹</span>
+            </div>
+            <div class="playlist-actions" v-if="!currentPlaylist?.id || currentPlaylist?.music">
+              <button @click="exportPlaylist(currentPlaylist)" class="playlist-action-btn" title="导出歌单">
+                <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+                <span>导出</span>
+              </button>
+              <button
+                v-if="currentPlaylist?.isBiliFavorite"
+                @click="loadFavResources"
+                class="playlist-action-btn"
+                :disabled="isLoadingFavResources"
+                title="加载收藏夹内的视频"
+              >
+                <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M19 8l-4 4h3c0 3.31-2.69 6-6 6-1.01 0-1.97-.25-2.8-.7l-1.46 1.46C8.97 19.54 10.43 20 12 20c4.42 0 8-3.58 8-8h3l-4-4zM6 12c0-3.31 2.69-6 6-6 1.01 0 1.97.25 2.8.7l1.46-1.46C15.03 4.46 13.57 4 12 4c-4.42 0-8 3.58-8 8H1l4 4 4-4H6z"/></svg>
+                <span v-if="isLoadingFavResources">
+                  {{ favSyncProgress.stage === 'ids' ? '正在拉取清单' : `加载中 ${favSyncProgress.loaded}/${currentPlaylist?.media_count || favSyncProgress.loaded}` }}
+                </span>
+                <span v-else>加载视频</span>
+              </button>
+              <button
+                v-if="!currentPlaylist?.isDefault"
+                @click="confirmDeletePlaylist(currentPlaylist)"
+                class="playlist-action-btn danger"
+                title="删除歌单（仅本地）"
+              >
+                <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1-1H5v2h14V4z"/></svg>
+                <span>删除</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="track-list" v-if="currentPlaylist?.music && currentPlaylist.music.length > 0">
+          <div class="track-list-header">
+            <span class="col-index">#</span>
+            <span class="col-title">标题</span>
+            <span class="col-actions"></span>
+            <span class="col-duration">时长</span>
+          </div>
           <div
             v-for="(music, index) in currentPlaylist?.music"
-            :key="music.bvid"
-            class="track-item"
+            :key="(music.bvid || '') + ':' + (music.favId ?? index) + ':' + (music.favType ?? '')"
+            class="track-row"
+            :style="{ '--track-index': index }"
             @click="playMusic(music)"
           >
-            <div class="track-number">{{ index + 1 }}</div>
-            <div class="track-info">
-              <h4>{{ music.title }}</h4>
-              <p>{{ music.author }}</p>
+            <div class="col-index">
+              <span class="track-index">{{ index + 1 }}</span>
+              <svg class="track-play-icon" viewBox="0 0 24 24" fill="currentColor" width="14" height="14">
+                <path d="M8 5v14l11-7z"/>
+              </svg>
             </div>
-            <div class="track-actions">
-              <button class="track-download-btn" @click.stop="downloadMusic(music)" title="下载">
+            <div class="col-title">
+              <img
+                :src="music.cover"
+                :alt="music.title"
+                class="track-cover"
+                @error="$event.target.src='https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=100'"
+              />
+              <div class="track-text">
+                <h4>{{ music.title }}</h4>
+                <p>{{ music.author }}</p>
+              </div>
+            </div>
+            <div class="col-actions">
+              <button class="track-action-btn" @click.stop="downloadMusic(music)" title="下载">
                 <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
               </button>
             </div>
-            <div class="track-duration">{{ parseDuration(music.duration) }}</div>
+            <div class="col-duration">{{ parseDuration(music.duration) }}</div>
           </div>
         </div>
+
+        <div v-else-if="currentPlaylist?.isBiliFavorite" class="playlist-empty">
+          <div class="empty-icon">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="48" height="48">
+              <path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/>
+            </svg>
+          </div>
+          <p>该收藏夹内的视频尚未加载到本地歌单</p>
+          <button class="load-fav-btn" :disabled="isLoadingFavResources" @click="loadFavResources">
+            <template v-if="isLoadingFavResources">
+              {{ favSyncProgress.stage === 'ids' ? '正在拉取清单' : `加载中 ${favSyncProgress.loaded}/${currentPlaylist?.media_count || favSyncProgress.loaded}` }}
+            </template>
+            <template v-else>加载该收藏夹内的视频</template>
+          </button>
+        </div>
+
+        <div v-else class="playlist-empty">
+          <div class="empty-icon">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="48" height="48">
+              <path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/>
+            </svg>
+          </div>
+          <p>该歌单还没有音乐</p>
+        </div>
+        </div>
       </section>
+
+      <MineView v-else-if="currentView === 'mine'" key="mine" />
+      </Transition>
     </main>
 
     <div v-if="currentTrack" class="player-bar">
@@ -1682,7 +1702,7 @@ onMounted(() => {
         <div class="big-progress">
           <div class="progress-container">
             <span class="progress-time">{{ parseDuration(currentTime) }}</span>
-            <div class="progress-bar-wrapper">
+            <div class="progress-bar-wrapper" :class="{ seeking: isSeeking }">
               <input
                 type="range"
                 min="0"
@@ -1690,6 +1710,9 @@ onMounted(() => {
                 :value="currentTime"
                 @input="onProgressInput"
                 @change="onProgressChange"
+                @pointerdown="onSeekStart"
+                @pointerup="onSeekEnd"
+                @pointercancel="onSeekEnd"
                 class="progress-slider"
               >
               <div class="progress-bar">
@@ -1764,23 +1787,6 @@ onMounted(() => {
       </div>
     </div>
 
-    <!-- <div v-if="showLoginModal" class="modal-overlay" @click="showLoginModal = false">
-      <div class="modal" @click.stop>
-        <h2>登录 B 站</h2>
-        <div class="qrcode-container">
-          <img v-if="qrcodeImage" :src="qrcodeImage" alt="登录二维码">
-          <div v-else class="loading">
-            <div class="loading-spinner"></div>
-          </div>
-        </div>
-        <p class="login-status" v-if="loginStatus">{{ loginStatus }}</p>
-        <p class="login-error" v-if="loginError">{{ loginError }}</p>
-        <button class="modal-btn cancel" @click="showLoginModal = false">
-          关闭
-        </button>
-      </div>
-    </div> -->
-
     <div v-if="showCreatePlaylistModal" class="modal-overlay" @click="cancelCreatePlaylist">
       <div class="modal" @click.stop>
         <h2>创建歌单</h2>
@@ -1810,7 +1816,7 @@ onMounted(() => {
         <h2>添加到歌单</h2>
         <div class="playlist-list-modal">
           <div
-            v-for="playlist in userPlaylists"
+            v-for="playlist in playlistStore.userPlaylists"
             :key="playlist.id"
             class="playlist-modal-item"
             @click="addToPlaylist(playlist)"
@@ -1818,7 +1824,7 @@ onMounted(() => {
             <span>{{ playlist.name }}</span>
             <span class="playlist-count">{{ playlist.music.length }} 首</span>
           </div>
-          <div v-if="userPlaylists.length === 0" class="empty-list">
+          <div v-if="playlistStore.userPlaylists.length === 0" class="empty-list">
             <p>暂无歌单，请先创建</p>
           </div>
         </div>
@@ -1830,109 +1836,17 @@ onMounted(() => {
       </div>
     </div>
 
-    <!-- 设置面板 -->
-    <div v-if="showSettingsPanel" class="settings-panel">
-      <div class="settings-panel-content">
-        <div class="settings-header">
-          <h2 class="text-gradient">设置</h2>
-          <button class="close-btn" @click="showSettingsPanel = false">
-            <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-          </button>
-        </div>
+    <!-- 设置面板已迁移至 MineView 中 -->
 
-        <!-- 设置标签页 -->
-        <div class="settings-tabs">
-          <button 
-            class="settings-tab" 
-            :class="{ active: settingsTab === 'general' }"
-            @click="settingsTab = 'general'"
-          >
-            通用
-          </button>
-          <button 
-            class="settings-tab" 
-            :class="{ active: settingsTab === 'about' }"
-            @click="settingsTab = 'about'"
-          >
-            关于
-          </button>
-        </div>
+    <DownloadManager />
 
-        <!-- 通用设置 -->
-        <div v-if="settingsTab === 'general'" class="settings-content">
-          <!-- 下载目录设置 -->
-          <div class="settings-section">
-            <h3>下载设置</h3>
-            <div class="setting-item">
-              <label>下载目录</label>
-              <div class="setting-value">
-                <span class="path-text">{{ downloadDirectory || '未设置' }}</span>
-                <button class="browse-btn" @click="selectDownloadDirectory">
-                  浏览
-                </button>
-              </div>
-            </div>
-          </div>
+    <LoginPanel
+      :visible="showLoginPanel"
+      @update:visible="(val) => showLoginPanel = val"
+      @login-success="handleLoginSuccess"
+      @sync-favorites="handleSyncFavorites"
+    />
 
-          <!-- 缓存管理 -->
-          <div class="settings-section">
-            <h3>缓存管理</h3>
-            <div class="setting-item">
-              <label>当前缓存大小</label>
-              <div class="setting-value">
-                <span v-if="isCalculatingCache" class="loading-text">计算中...</span>
-                <span v-else class="cache-size">{{ formatFileSize(cacheSize) }}</span>
-                <button 
-                  class="clear-cache-btn" 
-                  @click="showClearCacheConfirm = true"
-                  :disabled="isClearingCache"
-                >
-                  {{ isClearingCache ? '清理中...' : '清理缓存' }}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- 关于页面 -->
-        <div v-if="settingsTab === 'about'" class="settings-content about-content">
-          <div class="about-logo">
-            <span class="logo-text">Pink Music</span>
-            <span class="version">v1.3.0</span>
-          </div>
-          
-          <div class="about-description">
-            <p>一款优雅的 B 站音乐播放器，让你发现并享受喜欢的音乐。</p>
-          </div>
-
-          <div class="about-links">
-            <button class="about-link-btn" @click="openGitHub">
-              <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
-              <span>GitHub</span>
-            </button>
-          </div>
-
-          <div class="developer-info">
-            <span>Developed by Rayson Liu</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- 清理缓存确认弹窗 -->
-      <div v-if="showClearCacheConfirm" class="modal-overlay" @click="showClearCacheConfirm = false">
-        <div class="modal small-modal" @click.stop>
-          <h2>确认清理缓存</h2>
-          <p>清理缓存将删除所有已下载的音频文件和应用缓存，此操作不可恢复。</p>
-          <div class="modal-buttons">
-            <button class="modal-btn cancel" @click="showClearCacheConfirm = false">
-              取消
-            </button>
-            <button class="modal-btn confirm danger" @click="clearCache">
-              确认清理
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
+    <AppDock />
   </div>
 </template>
