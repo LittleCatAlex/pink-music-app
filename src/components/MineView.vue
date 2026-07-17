@@ -322,7 +322,7 @@ onMounted(() => {
         <div class="about-content">
           <div class="about-header">
             <span class="logo-text">Pink Music</span>
-            <span class="version">v2.0.0</span>
+            <span class="version">v2.0.1</span>
           </div>
           <p class="about-desc">一款优雅的 B 站音乐播放器，让你发现并享受喜欢的音乐。</p>
           <button class="btn-secondary" @click="openGitHub">

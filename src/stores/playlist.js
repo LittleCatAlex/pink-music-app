@@ -69,6 +69,27 @@ export const usePlaylistStore = defineStore('playlist', {
       this.savePlaylists()
       return true
     },
+    /**
+     * 批量删除歌单：默认收藏夹会被自动跳过，B 站收藏夹允许删除（仅本地副本）
+     * @param {string[]} playlistIds
+     * @returns {{ deleted: number, skipped: number, deletedIds: string[] }}
+     */
+    batchDeletePlaylists(playlistIds) {
+      if (!Array.isArray(playlistIds) || playlistIds.length === 0) {
+        return { deleted: 0, skipped: 0, deletedIds: [] }
+      }
+      const idSet = new Set(playlistIds)
+      const deletedIds = []
+      let skipped = 0
+      this.userPlaylists = this.userPlaylists.filter(p => {
+        if (!idSet.has(p.id)) return true
+        if (p.isDefault) { skipped++; return true }
+        deletedIds.push(p.id)
+        return false
+      })
+      if (deletedIds.length > 0) this.savePlaylists()
+      return { deleted: deletedIds.length, skipped, deletedIds }
+    },
     mergeBiliFavorites(favorites) {
       if (!Array.isArray(favorites) || favorites.length === 0) return 0
       let added = 0

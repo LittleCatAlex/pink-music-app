@@ -114,6 +114,10 @@ const isDownloading = ref(false)
 let downloadMonitorInterval = null
 const showPlaylistManager = ref(false)
 const showAddToPlaylistModal = ref(false)
+
+// 批量删除歌单：多选模式 + 已选 id 集合
+const isBatchMode = ref(false)
+const selectedPlaylistIds = ref(new Set())
 const currentVideoEpisodes = ref([])
 const isLoadingEpisodes = ref(false)
 const currentEpisodeIndex = ref(0)
@@ -225,6 +229,33 @@ function backToPlaylistList() {
   playlistStore.setCurrentPlaylist(null)
 }
 
+/**
+ * 一键播放整个歌单：从第一首开始。
+ * 1) 切到歌单视图，让 handleTrackEnd 能正确取到 currentPlaylist.music 作为下一首来源
+ * 2) 调用 playMusic(第一首)
+ * 3) 歌单为空（B 站收藏夹还没加载到本地）则提示用户去加载
+ */
+async function playPlaylistAll(playlist) {
+  if (!playlist) return
+  const list = playlist.music || []
+  if (list.length === 0) {
+    if (playlist.isBiliFavorite) {
+      alert('该收藏夹尚未加载到本地歌单，请先点击"加载视频"')
+    } else {
+      alert('该歌单还没有音乐')
+    }
+    return
+  }
+  // 先把视图/歌单指到要播放的这个，避免 handleTrackEnd 取错 musicList
+  if (currentPlaylist.value?.id !== playlist.id) {
+    playlistStore.setCurrentPlaylist(playlist)
+  }
+  if (currentView.value !== 'playlist') {
+    playlistStore.setCurrentView('playlist')
+  }
+  await playMusic(list[0])
+}
+
 async function confirmDeletePlaylist(playlist) {
   if (!playlist) return
   if (playlist.isDefault) return
@@ -242,6 +273,117 @@ async function confirmDeletePlaylist(playlist) {
   })
   if (!ok) return
   deletePlaylist(playlist)
+}
+
+// ============= 批量删除歌单 =============
+function enterBatchMode() {
+  isBatchMode.value = true
+}
+
+function exitBatchMode() {
+  isBatchMode.value = false
+  selectedPlaylistIds.value = new Set()
+}
+
+function togglePlaylistSelection(playlist) {
+  if (!playlist || playlist.isDefault) return // 默认收藏夹不可选
+  const next = new Set(selectedPlaylistIds.value)
+  if (next.has(playlist.id)) {
+    next.delete(playlist.id)
+  } else {
+    next.add(playlist.id)
+  }
+  selectedPlaylistIds.value = next
+}
+
+function selectAllDeletablePlaylists() {
+  const next = new Set()
+  for (const p of playlistStore.userPlaylists) {
+    if (!p.isDefault) next.add(p.id)
+  }
+  selectedPlaylistIds.value = next
+}
+
+function isPlaylistSelected(playlist) {
+  return !!playlist && selectedPlaylistIds.value.has(playlist.id)
+}
+
+async function confirmBatchDeletePlaylists() {
+  console.log('[BatchDelete] called, selected size =', selectedPlaylistIds.value.size)
+  if (selectedPlaylistIds.value.size === 0) {
+    console.log('[BatchDelete] selection empty, abort')
+    return
+  }
+  const ids = Array.from(selectedPlaylistIds.value)
+  console.log('[BatchDelete] selected ids =', ids)
+  // 预先统计：哪些会被真删，哪些会被跳过
+  const targets = playlistStore.userPlaylists.filter(p => ids.includes(p.id))
+  console.log('[BatchDelete] matched playlists =', targets.map(t => ({ id: t.id, name: t.name, isDefault: t.isDefault })))
+  const deletable = targets.filter(p => !p.isDefault)
+  const skipped = targets.filter(p => p.isDefault)
+  console.log('[BatchDelete] deletable =', deletable.length, 'skipped =', skipped.length)
+  if (deletable.length === 0) {
+    await appConfirm({
+      title: '无法删除',
+      message: '所选歌单均为默认收藏夹，不可删除。',
+      detail: '默认收藏夹为系统内置歌单，需要保留以便日常使用。',
+      confirmText: '我知道了',
+      cancelText: '关闭'
+    })
+    return
+  }
+  const totalSongs = deletable.reduce(
+    (sum, p) => sum + (p.music?.length || p.media_count || 0),
+    0
+  )
+  const hasBili = deletable.some(p => p.isBiliFavorite)
+  const detail =
+    (hasBili
+      ? `共 ${deletable.length} 个歌单、约 ${totalSongs} 首音乐将被删除。\n（其中 B 站收藏夹仅删除本地副本，不影响 B 站云端）`
+      : `共 ${deletable.length} 个歌单、约 ${totalSongs} 首音乐将被删除，此操作不可恢复。`) +
+    (skipped.length > 0 ? `\n另有 ${skipped.length} 个默认收藏夹将被自动跳过。` : '')
+  const ok = await appConfirm({
+    title: '批量删除歌单',
+    message: `确定要删除已选中的 ${deletable.length} 个歌单吗？`,
+    detail,
+    confirmText: '批量删除',
+    cancelText: '取消'
+  })
+  console.log('[BatchDelete] user confirmed =', ok)
+  if (!ok) return
+  try {
+    // 直接在 App.vue 里操作 store state，避开 Pinia action HMR 不热更的问题
+    // 逻辑与 store.batchDeletePlaylists 一致：默认歌单跳过，其余删除
+    const idSet = new Set(ids)
+    const deletedIds = []
+    let skipped = 0
+    playlistStore.userPlaylists = playlistStore.userPlaylists.filter(p => {
+      if (!idSet.has(p.id)) return true
+      if (p.isDefault) { skipped++; return true }
+      deletedIds.push(p.id)
+      return false
+    })
+    if (deletedIds.length > 0) playlistStore.savePlaylists()
+    const result = { deleted: deletedIds.length, skipped, deletedIds }
+    console.log('[BatchDelete] result =', result, 'userPlaylists now =', playlistStore.userPlaylists.map(p => p.id))
+    // 如果当前正在查看的歌单被删了，跳回列表
+    if (
+      currentPlaylist.value &&
+      result.deletedIds.includes(currentPlaylist.value.id)
+    ) {
+      playlistStore.setCurrentPlaylist(null)
+    }
+    // 退出批量模式
+    exitBatchMode()
+    if (result.deleted === 0 && result.skipped > 0) {
+      alert('所选歌单均为默认收藏夹，已跳过。')
+    } else if (result.deleted > 0) {
+      console.log(`[BatchDelete] ✅ 成功删除 ${result.deleted} 个歌单`)
+    }
+  } catch (err) {
+    console.error('[BatchDelete] ❌ 删除出错:', err)
+    alert('批量删除失败：' + (err?.message || err))
+  }
 }
 
 function loadFavResourcesFor(playlist) {
@@ -411,8 +553,13 @@ async function playMusic(music) {
   duration.value = music.duration || 180
   currentTime.value = 0
   bufferedProgress.value = 0
+  // 切歌时清空分 P 列表，避免上一次的"多 P 合集"被 handleTrackEnd 误用
+  // 导致歌单内普通歌曲不进入"下一首"分支
+  currentVideoEpisodes.value = []
+  currentEpisodeIndex.value = 0
 
-  // 尝试加载视频合集
+  // 尝试加载视频合集（如果当前曲是多 P 合集，loadVideoSeries 里会再次填充分 P 列表，
+  // 让 handleTrackEnd 自动在分 P 内循环；普通单曲则保持空，走歌单下一首）
   loadVideoSeries(music.bvid)
 
   // 更新系统媒体控制
@@ -548,28 +695,47 @@ async function loadVideoSeries(bvid) {
     // 获取视频详细信息，包含合集信息
     const result = await getWebInterfaceView({ bvid: bvid })
     if (result.code === 0 && result.data.pages && result.data.pages.length > 1) {
+      const episodes = result.data.pages.map((page, index) => ({
+        bvid: bvid,
+        cid: page.cid,
+        title: page.part,
+        duration: page.duration,
+        cover: fixCoverUrl(page.first_frame)
+      }))
       // 构建合集信息
       currentSeries.value = {
         id: bvid,
         title: result.data.title,
         cover: fixCoverUrl(result.data.pic),
-        episodes: result.data.pages.map((page, index) => ({
-          bvid: bvid,
-          cid: page.cid,
-          title: page.part,
-          duration: page.duration,
-          cover: fixCoverUrl(page.first_frame)
-        }))
+        episodes
       }
+      // 同步填充分 P 列表，让 handleTrackEnd 能直接在分 P 内循环，
+      // 不再依赖用户先打开一次"分P列表"面板
+      currentVideoEpisodes.value = episodes.map(e => ({
+        bvid: e.bvid,
+        cid: e.cid,
+        part: e.title,
+        duration: e.duration
+      }))
+      // 定位当前 cid 在分 P 中的位置
+      const currentCid = currentTrack.value?.cid
+      const idx = currentCid
+        ? currentVideoEpisodes.value.findIndex(e => e.cid === currentCid)
+        : 0
+      currentEpisodeIndex.value = idx >= 0 ? idx : 0
       showSeriesPanel.value = true
       console.log('加载视频合集成功:', result.data.title, '共', result.data.pages.length, '集')
     } else {
       currentSeries.value = null
+      currentVideoEpisodes.value = []
+      currentEpisodeIndex.value = 0
       showSeriesPanel.value = false
     }
   } catch (error) {
     console.error('加载视频合集失败:', error)
     currentSeries.value = null
+    currentVideoEpisodes.value = []
+    currentEpisodeIndex.value = 0
     showSeriesPanel.value = false
   }
 }
@@ -990,17 +1156,10 @@ function closeLoginPanel() {
 }
 
 async function handleLoginSuccess() {
-  // 登录成功后自动尝试拉取一次用户信息（防止轮询未触发）
+  // 登录成功后只拉取一次用户信息
+  // （按用户要求：不再静默同步 B 站收藏夹，避免每次启动/登录都触发远端请求）
   if (!userStore.userInfo) {
     await userStore.fetchUserInfo()
-  }
-  // 静默同步一次收藏夹，让用户进入应用时即可看到
-  if (userStore.userInfo?.mid) {
-    try {
-      await userStore.syncFavorites(playlistStore)
-    } catch (error) {
-      console.error('自动同步收藏夹失败:', error)
-    }
   }
 }
 
@@ -1309,21 +1468,68 @@ onUnmounted(() => {
             <div>
               <span class="playlist-label">我的歌单</span>
               <h2 class="playlist-list-title">全部歌单</h2>
-              <p class="playlist-list-subtitle">共 {{ playlistStore.userPlaylists.length }} 个歌单</p>
+              <p class="playlist-list-subtitle">
+                <template v-if="isBatchMode">
+                  已选 {{ selectedPlaylistIds.size }} / {{ playlistStore.userPlaylists.length }} 个
+                </template>
+                <template v-else>
+                  共 {{ playlistStore.userPlaylists.length }} 个歌单
+                </template>
+              </p>
             </div>
             <div class="playlist-list-actions">
-              <button @click="createPlaylist" class="playlist-action-btn primary" title="新建歌单">
-                <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
-                <span>新建歌单</span>
-              </button>
-              <button @click="importPlaylist" class="playlist-action-btn" title="导入歌单">
-                <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/></svg>
-                <span>导入歌单</span>
-              </button>
-              <button @click="handleSyncFavorites" class="playlist-action-btn" title="从 B 站收藏夹同步">
-                <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
-                <span>同步收藏夹</span>
-              </button>
+              <!-- 批量模式下的工具栏 -->
+              <template v-if="isBatchMode">
+                <button
+                  @click="selectAllDeletablePlaylists"
+                  class="playlist-action-btn"
+                  title="选中所有可删除的歌单（默认收藏夹除外）"
+                >
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z"/></svg>
+                  <span>全选</span>
+                </button>
+                <button
+                  @click="exitBatchMode"
+                  class="playlist-action-btn"
+                  title="退出批量模式"
+                >
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+                  <span>取消</span>
+                </button>
+                <button
+                  @click="confirmBatchDeletePlaylists"
+                  class="playlist-action-btn danger"
+                  :disabled="selectedPlaylistIds.size === 0"
+                  :title="selectedPlaylistIds.size === 0 ? '请先选择要删除的歌单' : '批量删除所选歌单'"
+                >
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1-1H5v2h14V4z"/></svg>
+                  <span>批量删除{{ selectedPlaylistIds.size > 0 ? ` (${selectedPlaylistIds.size})` : '' }}</span>
+                </button>
+              </template>
+              <!-- 正常模式下的工具栏 -->
+              <template v-else>
+                <button @click="createPlaylist" class="playlist-action-btn primary" title="新建歌单">
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+                  <span>新建歌单</span>
+                </button>
+                <button @click="importPlaylist" class="playlist-action-btn" title="导入歌单">
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/></svg>
+                  <span>导入歌单</span>
+                </button>
+                <button @click="handleSyncFavorites" class="playlist-action-btn" title="从 B 站收藏夹同步">
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
+                  <span>同步收藏夹</span>
+                </button>
+                <button
+                  v-if="playlistStore.userPlaylists.length > 1"
+                  @click="enterBatchMode"
+                  class="playlist-action-btn"
+                  title="批量管理歌单"
+                >
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M3 5h2v2H3V5zm4 0h14v2H7V5zM3 11h2v2H3v-2zm4 0h14v2H7v-2zM3 17h2v2H3v-2zm4 0h14v2H7v-2z"/></svg>
+                  <span>批量管理</span>
+                </button>
+              </template>
             </div>
           </div>
 
@@ -1345,26 +1551,55 @@ onUnmounted(() => {
               v-for="(playlist, index) in playlistStore.userPlaylists"
               :key="playlist.id"
               class="playlist-card-item"
-              :class="{ 'is-bili-fav': playlist.isBiliFavorite, 'is-default': playlist.isDefault }"
+              :class="{
+                'is-bili-fav': playlist.isBiliFavorite,
+                'is-default': playlist.isDefault,
+                'is-batch-mode': isBatchMode,
+                'is-selected': isBatchMode && isPlaylistSelected(playlist),
+                'is-disabled': isBatchMode && playlist.isDefault
+              }"
               :style="{ '--card-index': index }"
-              @click="goToPlaylist(playlist)"
+              @click="isBatchMode ? togglePlaylistSelection(playlist) : goToPlaylist(playlist)"
             >
-              <div class="playlist-card-cover">
-                <img
-                  :src="fixCoverUrl(playlist.cover, 300) || 'https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=300'"
-                  :alt="playlist.name"
-                  loading="lazy"
-                  decoding="async"
-                  @error="$event.target.src='https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=300'"
-                />
-                <div class="playlist-card-overlay">
-                  <svg viewBox="0 0 24 24" fill="currentColor" width="32" height="32">
-                    <path d="M8 5v14l11-7z"/>
-                  </svg>
-                </div>
-                <span v-if="playlist.isBiliFavorite" class="bili-fav-badge">B站</span>
-                <span v-if="playlist.isDefault" class="default-badge">默认</span>
+              <div
+                v-if="isBatchMode"
+                class="playlist-card-checkbox"
+                :class="{ checked: isPlaylistSelected(playlist) }"
+                @click.stop="togglePlaylistSelection(playlist)"
+              >
+                <svg v-if="isPlaylistSelected(playlist)" viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z"/></svg>
+                <span v-else-if="playlist.isDefault" class="lock-hint" title="默认收藏夹不可删除">🔒</span>
               </div>
+              <div class="playlist-card-cover">
+              <img
+                :src="fixCoverUrl(playlist.cover, 300) || 'https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=300'"
+                :alt="playlist.name"
+                loading="lazy"
+                decoding="async"
+                @error="$event.target.src='https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=300'"
+              />
+              <div
+                v-if="!isBatchMode"
+                class="playlist-card-overlay"
+                :class="{ 'is-clickable': playlist.music && playlist.music.length > 0 }"
+                :title="playlist.music && playlist.music.length > 0 ? '一键播放该歌单' : '该歌单暂无歌曲'"
+                @click.stop="playPlaylistAll(playlist)"
+              >
+                <svg viewBox="0 0 24 24" fill="currentColor" width="32" height="32">
+                  <path d="M8 5v14l11-7z"/>
+                </svg>
+              </div>
+              <div
+                v-else
+                class="playlist-card-overlay playlist-card-overlay--batch"
+                :class="{ 'is-checked': isPlaylistSelected(playlist) }"
+                @click.stop="togglePlaylistSelection(playlist)"
+              >
+                <svg v-if="isPlaylistSelected(playlist)" viewBox="0 0 24 24" fill="currentColor" width="36" height="36"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z"/></svg>
+              </div>
+              <span v-if="playlist.isBiliFavorite" class="bili-fav-badge">B站</span>
+              <span v-if="playlist.isDefault" class="default-badge">默认</span>
+            </div>
               <div class="playlist-card-body">
                 <h4 class="playlist-card-name">{{ playlist.name }}</h4>
                 <p class="playlist-card-count">{{ playlist.music?.length || playlist.media_count || 0 }} 首</p>
@@ -1407,7 +1642,12 @@ onUnmounted(() => {
             <span>返回歌单列表</span>
           </button>
         <div class="playlist-header">
-          <div class="playlist-cover">
+          <div
+            class="playlist-cover"
+            :class="{ 'is-clickable': currentPlaylist?.music && currentPlaylist.music.length > 0 }"
+            :title="currentPlaylist?.music && currentPlaylist.music.length > 0 ? '点击一键播放整个歌单' : ''"
+            @click="playPlaylistAll(currentPlaylist)"
+          >
             <img
               :src="currentPlaylist?.cover || 'https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=400'"
               :alt="currentPlaylist?.name"
@@ -1427,6 +1667,15 @@ onUnmounted(() => {
               <span v-if="currentPlaylist?.isBiliFavorite" class="playlist-tag">B 站收藏夹</span>
             </div>
             <div class="playlist-actions" v-if="!currentPlaylist?.id || currentPlaylist?.music">
+              <button
+                v-if="currentPlaylist?.music && currentPlaylist.music.length > 0"
+                @click="playPlaylistAll(currentPlaylist)"
+                class="playlist-action-btn primary"
+                title="一键播放整个歌单"
+              >
+                <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M8 5v14l11-7z"/></svg>
+                <span>播放</span>
+              </button>
               <button @click="exportPlaylist(currentPlaylist)" class="playlist-action-btn" title="导出歌单">
                 <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
                 <span>导出</span>

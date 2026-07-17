@@ -128,7 +128,7 @@ function switchTab(tab) {
         <div v-if="settingsStore.activeSettingsTab === 'about'" class="settings-section">
           <h3>关于 Pink Music</h3>
           <div class="about-info">
-            <p class="version">版本: 2.0.0</p>
+            <p class="version">版本: 2.0.1</p>
             <p class="description">基于 Electron 和 Vue 3 构建的 B 站音乐播放器</p>
             <button class="about-btn" @click="settingsStore.openGitHub()">
               <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
