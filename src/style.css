@@ -3,7 +3,7 @@
    多颜色主题 | 毛玻璃效果 | 流畅动画
    ============================================ */
 
-@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Inter:wght@300;400;500;600&display=swap');
 
 /* ==================== 主题变量 ==================== */
 :root {
@@ -1725,9 +1725,9 @@ button:active:not(:disabled):not(.no-press),
   -webkit-backdrop-filter: blur(var(--glass-blur-heavy));
   z-index: var(--z-toast);
   display: flex;
-  flex-direction: column;
-  align-items: center;
+  align-items: stretch;
   justify-content: center;
+  overflow-y: auto;
   opacity: 0;
   transition: opacity 0.3s ease-out;
   will-change: opacity;
@@ -1748,18 +1748,100 @@ button:active:not(:disabled):not(.no-press),
 }
 
 .player-page-content {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
   width: 100%;
-  max-width: 800px;
-  padding: 40px;
+  max-width: 1400px;
+  height: 100vh;
+  max-height: 100vh;
+  padding: 80px 48px 48px;
+  box-sizing: border-box;
+}
+
+.player-page-layout {
+  display: grid;
+  grid-template-columns: minmax(360px, 400px) 1fr;
+  align-items: center;
+  justify-content: center;
+  gap: 64px;
+  width: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
+  transition: grid-template-columns 0.35s cubic-bezier(0.4, 0, 0.2, 1), gap 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* 隐藏歌词时：layout 变单列，左半边在屏幕居中，并放大给封面更多空间 */
+.player-page-layout--solo {
+  grid-template-columns: 1fr;
+  gap: 0;
+}
+
+.player-page-layout--solo .player-page-left {
+  max-width: 440px;
+  justify-self: center;
+}
+
+.player-page-left {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 0 0 auto;
+  width: 100%;
+  max-width: 520px;
+}
+
+.player-page-right {
+  align-self: stretch;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+}
+
+@media (max-width: 1100px) {
+  .player-page-content {
+    padding: 80px 32px 32px;
+  }
+  .player-page-layout {
+    grid-template-columns: 1fr 1fr;
+    gap: 48px;
+  }
+  .player-page-layout--solo {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+  .player-page-left {
+    max-width: 460px;
+  }
+}
+
+@media (max-width: 900px) {
+  .player-page-content {
+    padding: 70px 20px 20px;
+  }
+  .player-page-layout {
+    grid-template-columns: 1fr;
+    gap: 24px;
+  }
+  .player-page-left {
+    width: 100%;
+    max-width: 360px;
+    justify-self: center;
+  }
+  .player-page-right {
+    width: 100%;
+    height: 360px;
+  }
 }
 
 .back-btn {
   position: absolute;
   top: 30px;
   left: 30px;
+  z-index: 10; /* 浮在 .player-page-content 之上，避免被它遮挡 */
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1787,11 +1869,11 @@ button:active:not(:disabled):not(.no-press),
 
 /* 专辑封面 */
 .album-art {
-  width: 320px;
-  height: 320px;
+  width: 380px;
+  height: 380px;
   border-radius: var(--radius-2xl);
   background: var(--primary-gradient);
-  margin-bottom: var(--spacing-3xl);
+  margin-bottom: var(--spacing-xl);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1872,12 +1954,13 @@ button:active:not(:disabled):not(.no-press),
 /* 歌曲信息 */
 .track-info {
   text-align: center;
-  margin-bottom: var(--spacing-2xl);
+  margin-bottom: var(--spacing-xl);
+  width: 100%;
 }
 
 .track-info h2 {
   font-family: var(--font-display);
-  font-size: var(--text-3xl);
+  font-size: 28px;
   font-weight: var(--font-weight-bold);
   margin-bottom: var(--spacing-xs);
   letter-spacing: -0.5px;
@@ -1888,7 +1971,7 @@ button:active:not(:disabled):not(.no-press),
 }
 
 .track-info h3 {
-  font-size: var(--text-xl);
+  font-size: 18px;
   color: var(--text-secondary);
   font-weight: var(--font-weight-light);
 }
@@ -1898,8 +1981,36 @@ button:active:not(:disabled):not(.no-press),
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: var(--spacing-2xl);
-  margin-bottom: var(--spacing-3xl);
+  margin-bottom: var(--spacing-md);
+  width: 100%;
+}
+
+/* 三列 grid：左 1fr | 中 auto（播放按钮）| 右 1fr
+   这样大播放按钮的水平中心 = 进度条中心（两者 max-width 相同） */
+.big-control-row {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  width: 100%;
+  max-width: 460px;
+  gap: 0;
+}
+
+.big-control-side {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  min-width: 0;
+}
+
+.big-control-side--left {
+  justify-content: flex-end;
+  padding-right: 24px;
+}
+
+.big-control-side--right {
+  justify-content: flex-start;
+  padding-left: 24px;
 }
 
 .big-control-btn {
@@ -1925,16 +2036,18 @@ button:active:not(:disabled):not(.no-press),
 }
 
 .big-control-btn.play {
-  width: 88px;
-  height: 88px;
+  width: 76px;
+  height: 76px;
   background: var(--primary-gradient);
   color: white;
-  box-shadow: 0 15px 50px var(--accent-glow-strong);
+  box-shadow: 0 10px 30px var(--accent-glow-strong);
+  /* 让 play 按钮的盒模型中心 = 几何中心，避免 padding 把视觉中心挤偏 */
+  flex-shrink: 0;
 }
 
 .big-control-btn.play:hover {
   transform: scale(1.08);
-  box-shadow: 0 20px 60px var(--accent-glow-strong);
+  box-shadow: 0 14px 40px var(--accent-glow-strong);
 }
 
 .big-control-btn.play:active {
@@ -1942,36 +2055,37 @@ button:active:not(:disabled):not(.no-press),
 }
 
 .big-control-btn svg {
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
 }
 
 .big-control-btn.play svg {
-  width: 36px;
-  height: 36px;
+  width: 30px;
+  height: 30px;
 }
 
 /* 大进度条 */
 .big-progress {
   width: 100%;
-  max-width: 500px;
+  max-width: 460px;
+  margin-top: var(--spacing-md);
 }
 
 .big-progress .progress-container {
-  gap: 16px;
+  gap: 18px;
 }
 
 .big-progress .progress-time {
-  font-size: 13px;
+  font-size: 14px;
   min-width: 50px;
 }
 
 .big-progress .progress-bar {
-  height: 6px;
+  height: 8px;
 }
 
 .big-progress .progress-bar:hover {
-  height: 8px;
+  height: 10px;
 }
 
 /* ==================== 模态框 ==================== */
@@ -3240,73 +3354,29 @@ button:active:not(:disabled):not(.no-press),
 }
 
 /* ==================== 合集面板样式 ==================== */
-.lyric-toggle-btn {
-  position: absolute;
-  top: 30px;
-  right: 30px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 16px;
-  background: var(--glass-bg);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  border: 1px solid var(--glass-border);
-  border-radius: var(--radius-full);
-  color: var(--text-secondary);
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all var(--transition-normal);
-  z-index: 10;
+/* 大屏播放页内的"显示/隐藏歌词"按钮：放在控制按钮行最右侧
+   继承 .big-control-btn 的圆形 + 36px padding
+   按钮里是一个"词"字（不是图标） */
+.lyric-toggle-btn-inline {
+  /* 不加 background，保持和 .big-control-btn 一样的透明背景 */
 }
 
-.lyric-toggle-btn svg {
-  flex-shrink: 0;
-  transition: transform var(--transition-fast);
+.lyric-toggle-char {
+  font-family: var(--font-display, -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0;
+  color: inherit;
+  user-select: none;
+  /* 字间距微调，让"词"字在按钮内居中更协调 */
+  padding-top: 1px;
 }
 
-.lyric-toggle-btn:hover {
-  background: var(--bg-card-hover);
-  color: var(--text-primary);
-  border-color: var(--primary-color);
-  transform: translateY(-1px);
-}
-
-.lyric-toggle-btn:hover svg {
-  transform: scale(1.1);
-}
-
-.lyric-toggle-btn:active {
-  transform: scale(0.97);
-}
-
-.lyric-toggle-btn.active {
-  background: var(--accent-glow-subtle);
-  border-color: var(--primary-color);
+.lyric-toggle-btn-inline.active {
   color: var(--primary-color);
+  background: var(--accent-glow-subtle);
   box-shadow: 0 0 0 3px var(--accent-glow-subtle);
-}
-
-@media (max-width: 1024px) {
-  .lyric-toggle-btn {
-    top: 20px;
-    right: 20px;
-    padding: 6px 12px;
-    font-size: 12px;
-  }
-}
-
-@media (max-width: 768px) {
-  .lyric-toggle-btn span {
-    display: none;
-  }
-  .lyric-toggle-btn {
-    padding: 8px;
-    width: 36px;
-    height: 36px;
-    justify-content: center;
-  }
 }
 
 .series-toggle-btn {

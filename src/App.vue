@@ -1875,109 +1875,107 @@ onUnmounted(() => {
     </div>
 
     <div v-if="showPlayerPage && currentTrack" class="player-page" :class="{ active: showPlayerPage }" @click="closePlayerPage">
+      <!-- 左上角：返回 -->
+      <button class="back-btn" @click.stop="closePlayerPage">
+        <svg viewBox="0 0 24 24" fill="currentColor" width="24" height="24"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+        <span>返回</span>
+      </button>
+
       <div class="player-page-content" @click.stop>
-        <button class="back-btn" @click="closePlayerPage">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="24" height="24"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
-          <span>返回</span>
-        </button>
-
-        <button
-          class="lyric-toggle-btn"
-          :class="{ active: lyricStore.showLyricPanel }"
-          :title="lyricStore.showLyricPanel ? '隐藏歌词' : '显示歌词'"
-          :aria-label="lyricStore.showLyricPanel ? '隐藏歌词' : '显示歌词'"
-          :aria-pressed="lyricStore.showLyricPanel"
-          @click="toggleLyricPanel"
-        >
-          <svg
-            v-if="lyricStore.showLyricPanel"
-            viewBox="0 0 24 24"
-            fill="currentColor"
-            width="16"
-            height="16"
-            aria-hidden="true"
-          >
-            <path d="M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.43-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7zM2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3 2 4.27z"/>
-          </svg>
-          <svg
-            v-else
-            viewBox="0 0 24 24"
-            fill="currentColor"
-            width="16"
-            height="16"
-            aria-hidden="true"
-          >
-            <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5C21.27 7.61 17 4.5 12 4.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
-          </svg>
-          <span>{{ lyricStore.showLyricPanel ? '隐藏歌词' : '显示歌词' }}</span>
-        </button>
-
         <button v-if="currentSeries" class="series-toggle-btn" @click="toggleSeriesPanel">
           <span>📋 合集</span>
           <span class="series-count">{{ currentSeries.episodes.length }}</span>
         </button>
 
-        <div ref="albumArtRef" class="album-art">
-          <img :src="fixCoverUrl(currentTrack.cover)" :alt="currentTrack.title" @error="$event.target.src='https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=400'">
-        </div>
+        <div
+          class="player-page-layout"
+          :class="{ 'player-page-layout--solo': !lyricStore.showLyricPanel }"
+        >
+          <!-- 左侧：封面 + 标题 + 进度 + 控制 -->
+          <div class="player-page-left">
+            <div ref="albumArtRef" class="album-art">
+              <img :src="fixCoverUrl(currentTrack.cover)" :alt="currentTrack.title" @error="$event.target.src='https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=400'">
+            </div>
 
-        <div class="track-info">
-          <h2>{{ currentTrack.title }}</h2>
-          <h3>{{ currentTrack.author }}</h3>
-        </div>
+            <div class="track-info">
+              <h2>{{ currentTrack.title }}</h2>
+              <h3>{{ currentTrack.author }}</h3>
+            </div>
 
-        <LyricDisplay
-          v-if="lyricStore.showLyricPanel"
-          :currentTime="currentTime"
-          :onSeek="handleLyricSeek"
-        />
+            <div class="big-progress">
+              <div class="progress-container">
+                <span class="progress-time">{{ parseDuration(currentTime) }}</span>
+                <div class="progress-bar-wrapper" :class="{ seeking: isSeeking }">
+                  <input
+                    type="range"
+                    min="0"
+                    :max="duration || 100"
+                    :value="currentTime"
+                    @input="onProgressInput"
+                    @change="onProgressChange"
+                    @pointerdown="onSeekStart"
+                    @pointerup="onSeekEnd"
+                    @pointercancel="onSeekEnd"
+                    class="progress-slider"
+                  >
+                  <div class="progress-bar">
+                    <div class="progress-fill" :style="{ width: (duration > 0 ? (currentTime / duration) * 100 : 0) + '%' }"></div>
+                    <div class="buffered-fill" :style="{ width: bufferedProgress + '%' }"></div>
+                  </div>
+                </div>
+                <span class="progress-time">{{ parseDuration(duration) }}</span>
+              </div>
 
-        <div class="big-control-buttons">
-          <button @click="togglePlayMode" class="big-control-btn" :class="{ active: playMode !== 'order' }" :title="getPlayModeLabel()">
-            <span class="mode-icon">{{ getPlayModeIcon() }}</span>
-          </button>
-          <button @click="playPrevious" class="big-control-btn">
-            <svg viewBox="0 0 24 24" fill="currentColor" width="24" height="24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
-          </button>
-          <button @click="togglePlayPause" class="big-control-btn play">
-            <svg v-if="isPlaying" viewBox="0 0 24 24" fill="currentColor" width="32" height="32"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
-            <svg v-else viewBox="0 0 24 24" fill="currentColor" width="32" height="32"><path d="M8 5v14l11-7z"/></svg>
-          </button>
-          <button @click="playNext" class="big-control-btn">
-            <svg viewBox="0 0 24 24" fill="currentColor" width="24" height="24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
-          </button>
-        </div>
-
-        <div class="big-progress">
-          <div class="progress-container">
-            <span class="progress-time">{{ parseDuration(currentTime) }}</span>
-            <div class="progress-bar-wrapper" :class="{ seeking: isSeeking }">
-              <input
-                type="range"
-                min="0"
-                :max="duration || 100"
-                :value="currentTime"
-                @input="onProgressInput"
-                @change="onProgressChange"
-                @pointerdown="onSeekStart"
-                @pointerup="onSeekEnd"
-                @pointercancel="onSeekEnd"
-                class="progress-slider"
-              >
-              <div class="progress-bar">
-                <div class="progress-fill" :style="{ width: (duration > 0 ? (currentTime / duration) * 100 : 0) + '%' }"></div>
-                <div class="buffered-fill" :style="{ width: bufferedProgress + '%' }"></div>
+              <!-- 下载缓存进度 -->
+              <div v-if="isDownloading" class="download-progress">
+                <div class="download-progress-bar">
+                  <div class="download-progress-fill" :style="{ width: downloadProgress + '%' }"></div>
+                </div>
+                <span class="download-progress-text">缓存中 {{ downloadProgress }}%</span>
               </div>
             </div>
-            <span class="progress-time">{{ parseDuration(duration) }}</span>
+
+            <div class="big-control-buttons">
+              <div class="big-control-row">
+                <div class="big-control-side big-control-side--left">
+                  <button @click="togglePlayMode" class="big-control-btn" :class="{ active: playMode !== 'order' }" :title="getPlayModeLabel()">
+                    <span class="mode-icon">{{ getPlayModeIcon() }}</span>
+                  </button>
+                  <button @click="playPrevious" class="big-control-btn">
+                    <svg viewBox="0 0 24 24" fill="currentColor" width="24" height="24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+                  </button>
+                </div>
+                <button @click="togglePlayPause" class="big-control-btn play">
+                  <svg v-if="isPlaying" viewBox="0 0 24 24" fill="currentColor" width="32" height="32"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+                  <svg v-else viewBox="0 0 24 24" fill="currentColor" width="32" height="32"><path d="M8 5v14l11-7z"/></svg>
+                </button>
+                <div class="big-control-side big-control-side--right">
+                  <button @click="playNext" class="big-control-btn">
+                    <svg viewBox="0 0 24 24" fill="currentColor" width="24" height="24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+                  </button>
+                  <!-- 显示/隐藏歌词：放在控制按钮行最右侧 -->
+                  <button
+                    class="big-control-btn lyric-toggle-btn-inline"
+                    :class="{ active: lyricStore.showLyricPanel }"
+                    :title="lyricStore.showLyricPanel ? '隐藏歌词' : '显示歌词'"
+                    :aria-label="lyricStore.showLyricPanel ? '隐藏歌词' : '显示歌词'"
+                    :aria-pressed="lyricStore.showLyricPanel"
+                    @click="toggleLyricPanel"
+                  >
+                    <span class="lyric-toggle-char" aria-hidden="true">词</span>
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
 
-          <!-- 下载缓存进度 -->
-          <div v-if="isDownloading" class="download-progress">
-            <div class="download-progress-bar">
-              <div class="download-progress-fill" :style="{ width: downloadProgress + '%' }"></div>
-            </div>
-            <span class="download-progress-text">缓存中 {{ downloadProgress }}%</span>
+          <!-- 右侧：歌词 -->
+          <div v-if="lyricStore.showLyricPanel" class="player-page-right">
+            <LyricDisplay
+              :currentTime="currentTime"
+              :onSeek="handleLyricSeek"
+              :large="true"
+            />
           </div>
         </div>
 

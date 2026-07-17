@@ -10,6 +10,14 @@ const props = defineProps({
   onSeek: {
     type: Function,
     default: null
+  },
+  /**
+   * 大屏模式：用于大屏播放页内，字号更大、行间距更宽
+   * 大屏播放页布局需要更大的字体来填满右半区
+   */
+  large: {
+    type: Boolean,
+    default: false
   }
 })
 
@@ -31,9 +39,22 @@ const isManualScrolling = ref(false)
 let timeUpdateThrottle = null
 let scrollReturnTimer = null
 
-// === 歌词行布局参数 ===
-const LINE_HEIGHT = 36       // 单一固定行高（用于 translateY 计算）
-const VIEWPORT_HEIGHT = 200  // 歌词可视区高度
+// === 歌词行布局参数（按 large 切换） ===
+// 大屏模式：视区固定高度（不让 flex 撑过头把工具栏挤没）；
+// 居中由 ResizeObserver 测得的实际视区高度驱动，喂给 trackStyle。
+// 普通模式：紧凑列表，一屏可见 3-4 行
+const LINE_HEIGHT = computed(() => (props.large ? 72 : 36))
+const VIEWPORT_HEIGHT = computed(() => (props.large ? 620 : 200))
+const viewportRef = ref(null)
+const actualViewportHeight = ref(props.large ? 620 : 200)
+let viewportResizeObserver = null
+
+// 大屏：让活跃行精确落在屏幕垂直中线（50vh）而不是视区中心。
+// 推导：player-page-content 上下 padding 80/48 不对称 → 内容区中心 y = 50vh + 16；
+// lyric-main 660px 在内容区中居中 → 视区中心 y = 50vh - 4；
+// 视区在 lyric-main 顶部（无上边距），所以活跃行需相对视区中心再下移 4px 落到 50vh。
+// 该值与屏幕高度无关，仅取决于 padding 与 lyric-main 高度（保持 660 / 80-48 时恒为 4）。
+const LARGE_SCREEN_CENTER_OFFSET = 4
 
 // === 手动模式超时（ms） ===
 const MANUAL_TIMEOUT = 6000
@@ -43,16 +64,21 @@ const OFFSET_STEP = 500
 
 // === 渲染窗口：所有行都在 track 中，用 translateY 居中 ===
 const trackStyle = computed(() => {
+  const lineH = LINE_HEIGHT.value
+  // 优先用 ResizeObserver 测得的实际视区高度，保证居中准确
+  const viewH = actualViewportHeight.value || VIEWPORT_HEIGHT.value
+  // 大屏：补 4px 让活跃行落到屏幕垂直中线（50vh），而不是视区几何中心
+  const screenCenterFix = props.large ? LARGE_SCREEN_CENTER_OFFSET : 0
   if (!lyricStore.hasLyric) {
     return { transform: 'translateY(0px)' }
   }
   const idx = lyricStore.currentLineIndex
   if (idx < 0) {
-    return { transform: `translateY(${(VIEWPORT_HEIGHT - LINE_HEIGHT) / 2}px)` }
+    return { transform: `translateY(${(viewH - lineH) / 2 + screenCenterFix}px)` }
   }
-  const center = VIEWPORT_HEIGHT / 2
-  const lineCenter = idx * LINE_HEIGHT + LINE_HEIGHT / 2
-  const offset = center - lineCenter
+  const center = viewH / 2
+  const lineCenter = idx * lineH + lineH / 2
+  const offset = center - lineCenter + screenCenterFix
   return {
     transform: `translateY(${offset}px)`,
     transition: 'transform 0.45s cubic-bezier(0.25, 1, 0.5, 1)'
@@ -60,8 +86,9 @@ const trackStyle = computed(() => {
 })
 
 const trackHeight = computed(() => {
+  const lineH = LINE_HEIGHT.value
   if (!lyricStore.hasLyric) return 0
-  return lyricStore.currentLyric.lyrics.length * LINE_HEIGHT
+  return lyricStore.currentLyric.lyrics.length * lineH
 })
 
 // === 手动模式恢复 ===
@@ -284,6 +311,21 @@ async function handleResetManual() {
 onMounted(() => {
   lyricStore.loadCache()
   document.addEventListener('keydown', onGlobalKeydown)
+  // 大屏：监听歌词视区实际高度，喂给 trackStyle 居中计算
+  if (props.large && viewportRef.value) {
+    actualViewportHeight.value = viewportRef.value.clientHeight || VIEWPORT_HEIGHT.value
+    if (typeof ResizeObserver !== 'undefined') {
+      viewportResizeObserver = new ResizeObserver((entries) => {
+        for (const entry of entries) {
+          const h = entry.contentRect.height
+          if (h > 0 && Math.abs(h - actualViewportHeight.value) > 0.5) {
+            actualViewportHeight.value = h
+          }
+        }
+      })
+      viewportResizeObserver.observe(viewportRef.value)
+    }
+  }
 })
 
 onUnmounted(() => {
@@ -306,6 +348,7 @@ function onGlobalKeydown(e) {
   <div
     v-if="lyricStore.showLyricPanel"
     class="lyric-stage"
+    :class="{ 'lyric-stage--large': large }"
     @wheel.prevent="onWheel"
   >
     <!-- ============ 歌词主视图（抽屉未打开时） ============ -->
@@ -335,6 +378,7 @@ function onGlobalKeydown(e) {
 
         <!-- 歌词滑动区 -->
         <div
+          ref="viewportRef"
           class="lyric-viewport"
           :style="{ height: VIEWPORT_HEIGHT + 'px' }"
           @wheel.stop="onWheel"
@@ -587,6 +631,60 @@ function onGlobalKeydown(e) {
   font-weight: 600;
   /* 活跃行轻微放大，加强焦点感 */
   transform: scale(1.02);
+}
+
+/* 大屏播放页内的歌词（large prop 触发）
+   - 字体：Outfit（项目已有的圆润无衬线），无衬线 + 偏粗字重
+   - 普通行 24px / 600，行高 1.5；LINE_HEIGHT 72 足够容纳中英双语行偶尔换行成 2 行
+   - 活跃行 32px / 800，颜色高亮
+   - 整体在 player-page-right 中垂直居中；视区 620px，actions 在底部
+   - 视区几何中心 y = 50vh - 4（受 player-page-content 上下 padding 80/48 影响），
+     通过 trackStyle 追加 LARGE_SCREEN_CENTER_OFFSET = 4px 把活跃行校正到屏幕正中 (50vh)
+   - 一屏可见 8-9 行（620 / 72 ≈ 8.6） */
+.lyric-stage--large {
+  /* 在 .player-page-right (flex stretch) 内不撑满，垂直居中 */
+  align-self: center;
+  max-height: 100%;
+}
+.lyric-stage--large .lyric-main {
+  /* = VIEWPORT(620) + actions margin(12) + actions(~28) ≈ 660，整体下沿贴近红线 */
+  height: 660px;
+}
+.lyric-stage--large .lyric-viewport {
+  /* 加大上下渐隐蒙版，避免字号增大后边缘被裁切 */
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    black 60px,
+    black calc(100% - 60px),
+    transparent 100%
+  );
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    black 60px,
+    black calc(100% - 60px),
+    transparent 100%
+  );
+}
+.lyric-stage--large .line {
+  font-family: var(--font-display);
+  font-size: 24px;
+  line-height: 1.5;
+  font-weight: 600;
+  letter-spacing: -0.3px;
+  /* 中英双语行偶尔需要换行：解除 max-width:90% 限制，让行宽跟随列宽 */
+  max-width: 100%;
+  /* 允许长行在词边界换行，避免单字符换行 */
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+.lyric-stage--large .line.active {
+  font-size: 32px;
+  font-weight: 800;
+  /* 不用 scale：text-box 高度变化会让居中计算漂移 */
+  transform: none;
+  letter-spacing: -0.5px;
 }
 
 /* ===== 工具栏 ===== */
