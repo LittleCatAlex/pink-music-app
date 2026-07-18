@@ -1,7 +1,7 @@
 {
   "name": "pink-music",
   "private": true,
-  "version": "2.2.0",
+  "version": "2.3.0",
   "main": "electron/main.js",
   "scripts": {
     "dev": "vite",

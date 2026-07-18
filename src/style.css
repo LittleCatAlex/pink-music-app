@@ -195,6 +195,97 @@
   --border-glow: rgba(249, 115, 22, 0.3);
 }
 
+/* ============================================================
+   Apple Music 主题（基于 Apple Music macOS 原生设计规范）
+   ============================================================
+   设计哲学：
+   - 沉浸式深色基调（默认深色），毛玻璃（Glassmorphism）质感
+   - 红色 #FF3B30 作为唯一强调色
+   - 文字：主要白色、次要 0.7 白、灰显 0.4 白
+   - 分隔/边框用极弱白线 rgba(255,255,255,0.1)
+   - 去除一切浮夸张渐变、重阴影，还原原生 macOS 观感
+   ============================================================ */
+[data-color="apple-music"] {
+  /* 主色：Apple Music 原生红色 */
+  --primary-color: #FF3B30;
+  --primary-dark: #D70015;
+  --primary-light: #FF6B6B;
+  --primary-gradient: #FF3B30;
+  --primary-gradient-hover: #D93829;
+
+  /* 发光/光晕 — 极弱 */
+  --accent-glow: rgba(255, 59, 48, 0.12);
+  --accent-glow-strong: rgba(255, 59, 48, 0.24);
+  --accent-glow-subtle: rgba(255, 59, 48, 0.06);
+  --border-glow: rgba(255, 59, 48, 0.25);
+
+  /* 描边专用：红色描边元素（用户显式启用） */
+  --apple-stroke: #FF3B30;
+  --apple-stroke-soft: rgba(255, 59, 48, 0.45);
+
+  /* ===== 背景色阶（深色基调 — Apple Music 默认） ===== */
+  --bg-primary:  #1A1A1A;               /* 窗口最底层 */
+  --bg-secondary: #222222;               /* 列表/卡片底层 */
+  --bg-tertiary: #2C2C2C;               /* hover/悬停项 */
+  --bg-card: rgba(255, 255, 255, 0.06); /* 毛玻璃卡片底 */
+  --bg-card-hover: rgba(255, 255, 255, 0.10);
+  --bg-overlay: rgba(0, 0, 0, 0.92);    /* 模态遮罩 */
+  --bg-surface: rgba(255, 255, 255, 0.04);
+
+  /* ===== 文字色阶（对应 Apple Music 规范） ===== */
+  --text-primary:   #FFFFFF;                /* 主要标签（标题、歌手） */
+  --text-secondary: rgba(255, 255, 255, 0.7); /* 次要信息（专辑名、时长） */
+  --text-muted:     rgba(255, 255, 255, 0.4); /* 灰显文本（未激活、辅助） */
+  --text-disabled:  rgba(255, 255, 255, 0.2); /* 禁用态 */
+
+  /* ===== 分隔线与边框 ===== */
+  --border-color:       rgba(255, 255, 255, 0.08);
+  --border-color-hover: rgba(255, 255, 255, 0.16);
+  --glass-bg:    rgba(30, 30, 30, 0.72);    /* 毛玻璃层 */
+  --glass-border: rgba(255, 255, 255, 0.1); /* 1px 毛玻璃边框 */
+
+  /* ===== 阴影（极轻，还原原生） ===== */
+  --shadow-soft:  0 2px 8px rgba(0, 0, 0, 0.3);
+  --shadow-glow:  0 0 0 2px rgba(255, 59, 48, 0.15);
+  --shadow-glow-strong: 0 0 0 3px rgba(255, 59, 48, 0.25);
+  --shadow-card:  0 1px 4px rgba(0, 0, 0, 0.3);
+
+  /* ===== Dock（原生产品级毛玻璃） ===== */
+  --dock-bg: rgba(28, 28, 28, 0.78);
+  --dock-border: rgba(255, 255, 255, 0.12);
+  --dock-shadow: 0 -1px 0 rgba(255, 255, 255, 0.06) inset,
+                 0 2px 12px rgba(0, 0, 0, 0.5);
+  --dock-hover-bg: rgba(255, 255, 255, 0.08);
+  --dock-active-inset: rgba(255, 255, 255, 0.08);
+}
+
+/* Apple Music 浅色模式（与深色共享红色主色，但文字反色） */
+[data-theme="light"][data-color="apple-music"] {
+  --bg-primary:  #F5F5F7;
+  --bg-secondary: #FFFFFF;
+  --bg-tertiary: #E8E8ED;
+  --bg-card: rgba(255, 255, 255, 0.92);
+  --bg-card-hover: rgba(255, 255, 255, 1);
+  --bg-overlay: rgba(245, 245, 247, 0.98);
+  --bg-surface: rgba(0, 0, 0, 0.03);
+  --text-primary:   #1D1D1F;
+  --text-secondary: rgba(0, 0, 0, 0.65);
+  --text-muted:     rgba(0, 0, 0, 0.4);
+  --text-disabled:  rgba(0, 0, 0, 0.22);
+  --border-color:       rgba(0, 0, 0, 0.08);
+  --border-color-hover: rgba(0, 0, 0, 0.15);
+  --glass-bg:    rgba(255, 255, 255, 0.82);
+  --glass-border: rgba(0, 0, 0, 0.06);
+  --shadow-soft:  0 1px 3px rgba(0, 0, 0, 0.04);
+  --shadow-card:  0 1px 6px rgba(0, 0, 0, 0.06);
+  --dock-bg: rgba(255, 255, 255, 0.85);
+  --dock-border: rgba(0, 0, 0, 0.08);
+  --dock-shadow: 0 -0.5px 0 rgba(0, 0, 0, 0.06) inset,
+                 0 2px 8px rgba(0, 0, 0, 0.06);
+  --dock-hover-bg: rgba(0, 0, 0, 0.04);
+  --dock-active-inset: rgba(0, 0, 0, 0.04);
+}
+
 /* 浅色模式 */
 [data-theme="light"] {
   --bg-primary: #F8FAFC;
@@ -1146,7 +1237,7 @@ body {
   background: var(--glass-bg);
   backdrop-filter: blur(var(--glass-blur));
   -webkit-backdrop-filter: blur(var(--glass-blur));
-  border: 1px solid var(--glass-border);
+  border: none;
   border-radius: var(--radius-xl);
   padding: var(--spacing-lg);
   cursor: pointer;
@@ -1728,13 +1819,46 @@ button:active:not(:disabled):not(.no-press),
   align-items: stretch;
   justify-content: center;
   overflow: hidden;
-  opacity: 0;
-  transition: opacity 0.3s ease-out;
-  will-change: opacity;
+  /* 背景缩放动画由 <Transition name="player-zoom"> 控制，
+     .active 仅用于子元素 stagger 入场 */
 }
 
 .player-page.active {
-  opacity: 1;
+  /* opacity/transform 由 Transition class 接管 */
+}
+
+/* ============ 大屏播放页 缩放入场/离场动画 ============
+   enter：缩放 0.88 + 上移 40px → 原始大小，带弹性缓出
+   leave：缩放 1 → 0.9 + 下移 20px + 淡出，平滑衰减 */
+.player-zoom-enter-active {
+  animation: playerZoomIn 0.42s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  will-change: opacity, transform;
+}
+.player-zoom-leave-active {
+  animation: playerZoomOut 0.28s ease-in forwards;
+  will-change: opacity, transform;
+}
+
+@keyframes playerZoomIn {
+  0% {
+    opacity: 0;
+    transform: scale(0.88) translateY(40px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes playerZoomOut {
+  0% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0.9) translateY(20px);
+  }
 }
 
 /* 当音频可视化关闭时，可视化组件本身不渲染，
@@ -1941,6 +2065,46 @@ button:active:not(:disabled):not(.no-press),
   transform: scale(1);
   opacity: 1;
   animation: float 8s ease-in-out infinite 0.8s, glow 5s ease-in-out infinite 0.8s alternate;
+}
+
+/* ==================== 大屏播放页 子元素入场（与 dock 切页统一风格） ==================== */
+/* 与主页面 page transition 共用同一组变量（0.35s / cubic-bezier(0.16, 1, 0.3, 1)），
+   整体感觉"从上滑入 + 淡入"，通过 stagger 让封面 → 标题 → 进度条 → 控制按钮 → 歌词
+   按顺序错开出现，与其他页面切换保持一致的呼吸感。
+   注意：album-art 自己有 transform 动画（scale/float/glow），不能共用 transform: translateY，
+   所以它保持现有方案，不在这一组里 stagger。*/
+.back-btn,
+.track-info,
+.big-progress,
+.big-control-buttons,
+.player-page-right {
+  opacity: 0;
+  transform: translateY(16px);
+  /* 沿用全局页面切换曲线，避免大屏内出现"两种节奏" */
+  transition: opacity var(--anim-page-duration) var(--anim-page-easing),
+              transform var(--anim-page-duration) var(--anim-page-easing);
+  will-change: opacity, transform;
+}
+
+.player-page.active .back-btn           { opacity: 1; transform: translateY(0); transition-delay: 0.05s; }
+.player-page.active .track-info         { opacity: 1; transform: translateY(0); transition-delay: 0.18s; }
+.player-page.active .big-progress       { opacity: 1; transform: translateY(0); transition-delay: 0.26s; }
+.player-page.active .big-control-buttons{ opacity: 1; transform: translateY(0); transition-delay: 0.32s; }
+.player-page.active .player-page-right  { opacity: 1; transform: translateY(0); transition-delay: 0.20s; }
+
+/* 关闭大屏时反向：先整体淡出再卸载，所以子元素不做反向 stagger，
+   跟着 .player-page 的 opacity 一起淡出即可（避免 leave 时还在 transition-delay 里
+   出现"卡住再消失"的怪异中间帧）。关闭状态下保持初始态由 .player-page 的 opacity 0 兜住。 */
+@media (prefers-reduced-motion: reduce) {
+  .back-btn,
+  .track-info,
+  .big-progress,
+  .big-control-buttons,
+  .player-page-right {
+    transition: none;
+    opacity: 1;
+    transform: none;
+  }
 }
 
 @keyframes float {
@@ -2221,123 +2385,11 @@ button:active:not(:disabled):not(.no-press),
   background: var(--bg-card);
 }
 
-/* 主题选择面板 */
-.theme-panel {
-  position: fixed;
-  top: 80px;
-  right: 20px;
-  background: var(--glass-bg);
-  backdrop-filter: blur(30px);
-  border: 1px solid var(--glass-border);
-  border-radius: var(--radius-xl);
-  padding: 24px;
-  width: 320px;
-  z-index: 1000;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-  animation: slideDown 0.3s ease;
-}
+/* 旧主题面板（已迁移到 MineView 设置 tab），以下样式保留兼容，不再被引用 */
 
 @keyframes slideDown {
   from { opacity: 0; transform: translateY(-20px); }
   to { opacity: 1; transform: translateY(0); }
-}
-
-.theme-panel h3 {
-  font-size: 16px;
-  font-weight: 600;
-  margin-bottom: 16px;
-  color: var(--text-primary);
-}
-
-.theme-colors {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 12px;
-  margin-bottom: 24px;
-}
-
-.theme-color-btn {
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  border: 3px solid transparent;
-  cursor: pointer;
-  transition: all var(--transition-fast);
-  position: relative;
-}
-
-.theme-color-btn::after {
-  content: '';
-  position: absolute;
-  inset: -6px;
-  border-radius: 50%;
-  border: 2px solid transparent;
-  transition: border-color var(--transition-fast);
-}
-
-.theme-color-btn:hover {
-  transform: scale(1.15);
-}
-
-.theme-color-btn.active::after {
-  border-color: var(--primary-color);
-}
-
-.theme-color-btn.active::before {
-  content: '✓';
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: white;
-  font-size: 16px;
-  font-weight: bold;
-  text-shadow: 0 1px 2px rgba(0,0,0,0.3);
-}
-
-.color-pink { background: linear-gradient(135deg, #FF69B4, #FF1493); }
-.color-purple { background: linear-gradient(135deg, #9B59B6, #8E44AD); }
-.color-blue { background: linear-gradient(135deg, #3498DB, #2980B9); }
-.color-green { background: linear-gradient(135deg, #2ECC71, #27AE60); }
-.color-orange { background: linear-gradient(135deg, #E67E22, #D35400); }
-
-.theme-modes {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-}
-
-.theme-mode-btn {
-  padding: 12px 16px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-color);
-  background: transparent;
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-size: 14px;
-  font-weight: 500;
-  transition: all var(--transition-fast);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-}
-
-.theme-mode-btn:hover {
-  border-color: var(--primary-color);
-  color: var(--text-primary);
-}
-
-.theme-mode-btn.active {
-  background: var(--primary-gradient);
-  border-color: transparent;
-  color: white;
-}
-
-.theme-mode-btn svg {
-  width: 18px;
-  height: 18px;
 }
 
 /* ==================== 播放列表 ==================== */
@@ -2558,10 +2610,10 @@ button:active:not(:disabled):not(.no-press),
   cursor: pointer;
   border-radius: var(--radius-xl);
   /* 性能优化：原 backdrop-filter: blur(24px) 在 30+ 卡片时合成层爆炸。
-     卡片下方是固定背景渐变，blur 视觉收益极低，改用纯半透明色即可。
+     卡片下方是固定背景，blur 视觉收益极低，改用纯透明色即可。
      视觉差异肉眼几乎不可见，FPS 翻倍。 */
   background: var(--glass-bg);
-  border: 1px solid var(--glass-border);
+  border: none;
   overflow: hidden;
   position: relative;
   animation: cardEnter var(--anim-card-duration) var(--anim-card-easing) both;
@@ -4186,6 +4238,87 @@ button:active:not(:disabled):not(.no-press),
   cursor: not-allowed;
 }
 
+/* ============================================================
+   主题设置（在 MineView 设置 tab 中）
+   - 模式按钮：胶囊式双选，深/浅
+   - 主题色：圆形色块（带勾选标记），含 Apple Music 红色
+   ============================================================ */
+.theme-mode-buttons {
+  display: inline-flex;
+  gap: 8px;
+}
+
+.theme-mode-btn {
+  padding: 6px 18px;
+  border: 1.5px solid var(--border-color);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.theme-mode-btn:hover {
+  border-color: var(--primary-color);
+  color: var(--text-primary);
+}
+
+.theme-mode-btn.active {
+  background: var(--primary-color);
+  color: #fff;
+  border-color: var(--primary-color);
+}
+
+.color-options-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+
+.color-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.color-current-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  min-width: 80px;
+}
+
+.color-swatch-btn {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid var(--border-color);
+  padding: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform var(--transition-fast), border-color var(--transition-fast),
+    box-shadow var(--transition-fast);
+}
+
+.color-swatch-btn:hover {
+  transform: scale(1.1);
+  border-color: var(--text-secondary);
+}
+
+.color-swatch-btn.active {
+  border-color: var(--text-primary);
+  box-shadow: 0 0 0 2px var(--bg-primary), 0 0 0 4px var(--primary-color);
+}
+
+.color-swatch-btn svg {
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.35));
+}
+
 /* 关于页面 */
 .about-content {
   display: flex;
@@ -5409,4 +5542,585 @@ input:checked + .slider:before {
   .main-content { padding: var(--spacing-lg) var(--spacing-md) var(--main-content-padding-bottom); }
   .profile-card { flex-direction: column; text-align: center; }
   .profile-actions { justify-content: center; }
+}
+
+/* ============================================================
+   Apple Music 主题专用样式覆盖
+   目标：让按钮、卡片、输入框、进度条等 UI 元素呈现 Apple Music macOS 原生风格
+   参考规范：
+   - 圆角：按钮 999px，卡片 8pt，输入框 6pt
+   - 播放按钮：44px 红色圆形，白色 SF Symbol
+   - 次要操作：纯图标，无背景，悬停半透明
+   - 进度条：3px 高，rgba(255,255,255,0.3) 轨道，红色填充
+   - 拖动手柄：直径 10pt，白色，微弱阴影
+   - 侧边栏选中项：左侧 3px 红色竖条 + 半透明白色高亮
+   - 毛玻璃效果：保留 backdrop-filter（Apple Music 原生大量使用）
+   ============================================================ */
+
+/* --- 输入控件：苹果风格毛玻璃底 + 无边框（聚焦时红色） --- */
+[data-color="apple-music"] .setting-item input,
+[data-color="apple-music"] .setting-item select,
+[data-color="apple-music"] .quality-select,
+[data-color="apple-music"] .path-text,
+[data-color="apple-music"] .eq-preset-select,
+[data-color="apple-music"] input[type="text"],
+[data-color="apple-music"] input[type="search"] {
+  border: none !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: var(--text-primary) !important;
+  border-radius: 6px !important;
+  padding: 8px 12px !important;
+  backdrop-filter: blur(6px) !important;
+  -webkit-backdrop-filter: blur(6px) !important;
+  transition: background var(--transition-fast), box-shadow var(--transition-fast);
+}
+[data-color="apple-music"] .setting-item input:focus,
+[data-color="apple-music"] .setting-item select:focus,
+[data-color="apple-music"] input[type="text"]:focus,
+[data-color="apple-music"] input[type="search"]:focus {
+  background: rgba(255, 255, 255, 0.14) !important;
+  box-shadow: 0 0 0 2px rgba(255, 59, 48, 0.3) !important;
+  outline: none !important;
+}
+
+/* --- 面板 / 弹窗（Apple Music 专属毛玻璃大圆角） --- */
+[data-color="apple-music"] .glass-card,
+[data-color="apple-music"] .settings-section,
+[data-color="apple-music"] .quick-action,
+[data-color="apple-music"] .modal,
+[data-color="apple-music"] .sidebar {
+  border: none !important;
+  border-radius: 16px !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25) !important;
+  backdrop-filter: blur(20px) !important;
+  -webkit-backdrop-filter: blur(20px) !important;
+}
+[data-color="apple-music"] .sidebar {
+  background: rgba(28, 28, 28, 0.72) !important;
+}
+[data-color="apple-music"] .topbar,
+[data-color="apple-music"] .player-bar {
+  border: none !important;
+  backdrop-filter: blur(16px) !important;
+  -webkit-backdrop-filter: blur(16px) !important;
+  box-shadow: none !important;
+}
+[data-color="apple-music"] .topbar {
+  background: rgba(30, 30, 30, 0.72) !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
+}
+[data-color="apple-music"] .player-bar {
+  background: rgba(28, 28, 28, 0.82) !important;
+  border-top: 1px solid rgba(255, 255, 255, 0.08) !important;
+}
+
+/* Apple Music 浅色模式：顶栏/播放栏/侧边栏反白适配 */
+[data-theme="light"][data-color="apple-music"] .sidebar {
+  background: rgba(245, 245, 247, 0.78) !important;
+}
+[data-theme="light"][data-color="apple-music"] .topbar {
+  background: rgba(255, 255, 255, 0.78) !important;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08) !important;
+}
+[data-theme="light"][data-color="apple-music"] .player-bar {
+  background: rgba(255, 255, 255, 0.85) !important;
+  border-top: 1px solid rgba(0, 0, 0, 0.08) !important;
+}
+
+/* Apple Music 浅色模式：输入框背景反色 */
+[data-theme="light"][data-color="apple-music"] .setting-item input,
+[data-theme="light"][data-color="apple-music"] .setting-item select,
+[data-theme="light"][data-color="apple-music"] input[type="text"],
+[data-theme="light"][data-color="apple-music"] input[type="search"] {
+  background: rgba(0, 0, 0, 0.06) !important;
+}
+[data-theme="light"][data-color="apple-music"] .setting-item input:focus,
+[data-theme="light"][data-color="apple-music"] .setting-item select:focus,
+[data-theme="light"][data-color="apple-music"] input[type="text"]:focus,
+[data-theme="light"][data-color="apple-music"] input[type="search"]:focus {
+  background: rgba(0, 0, 0, 0.10) !important;
+}
+
+/* Apple Music 浅色模式：面板毛玻璃（浅白底，通透感更强） */
+[data-theme="light"][data-color="apple-music"] .glass-card,
+[data-theme="light"][data-color="apple-music"] .settings-section,
+[data-theme="light"][data-color="apple-music"] .quick-action,
+[data-theme="light"][data-color="apple-music"] .modal {
+  background: rgba(255, 255, 255, 0.65) !important;
+  border-radius: 16px !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06) !important;
+}
+
+/* Apple Music 浅色模式：次要按钮悬停反色 */
+[data-theme="light"][data-color="apple-music"] .btn-secondary:hover,
+[data-theme="light"][data-color="apple-music"] .playlist-action-btn:not(.primary):not(.danger):hover {
+  background: rgba(0, 0, 0, 0.08) !important;
+  color: #000 !important;
+}
+
+/* Apple Music 浅色模式：顶栏按钮悬停 */
+[data-theme="light"][data-color="apple-music"] .topbar-btn:hover {
+  background: rgba(0, 0, 0, 0.08) !important;
+  color: #000 !important;
+}
+
+/* Apple Music 浅色模式：进度条轨道反色 */
+[data-theme="light"][data-color="apple-music"] .progress-slider::-webkit-slider-runnable-track {
+  background: rgba(0, 0, 0, 0.15) !important;
+}
+
+[data-color="apple-music"] .app-container::before,
+[data-color="apple-music"] .app-container::after {
+  display: none !important;
+}
+
+[data-color="apple-music"] .hero-section,
+[data-color="apple-music"] .hero-section::before,
+[data-color="apple-music"] .hero-section::after {
+  background: var(--bg-secondary) !important;
+  animation: none !important;
+}
+
+/* --- 按钮：原生 Apple Music 风格 --- */
+/* 主要/播放按钮：红色圆形 */
+[data-color="apple-music"] .btn-primary,
+[data-color="apple-music"] .playlist-action-btn.primary,
+[data-color="apple-music"] .load-fav-btn,
+[data-color="apple-music"] .control-btn.play {
+  background: var(--primary-color) !important;
+  color: #fff !important;
+  border: none !important;
+  border-radius: 999px !important;
+  min-width: 44px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: none !important;
+  font-weight: 500 !important;
+  transition: transform 0.15s ease, opacity 0.15s ease;
+}
+[data-color="apple-music"] .btn-primary:hover,
+[data-color="apple-music"] .playlist-action-btn.primary:hover,
+[data-color="apple-music"] .control-btn.play:hover {
+  opacity: 0.85;
+  transform: scale(1.03);
+}
+[data-color="apple-music"] .btn-primary:active,
+[data-color="apple-music"] .control-btn.play:active {
+  transform: scale(0.95);
+}
+
+/* 大屏播放按钮：76px 红色圆形 + 白图标，匹配大屏播放页视觉比例 */
+[data-color="apple-music"] .big-control-btn.play,
+[data-color="apple-music"] .control-btn-large.play-main {
+  background: var(--primary-color) !important;
+  color: #fff !important;
+  border: none !important;
+  border-radius: 999px !important;
+  width: 76px !important;
+  height: 76px !important;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 20px rgba(255, 59, 48, 0.3) !important;
+}
+[data-color="apple-music"] .big-control-btn.play svg {
+  width: 30px;
+  height: 30px;
+}
+
+/* 次要按钮：文字型，无背景，悬停半透明 */
+[data-color="apple-music"] .btn-secondary,
+[data-color="apple-music"] .playlist-action-btn:not(.primary):not(.danger) {
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+  border: none !important;
+  border-radius: 6px !important;
+  padding: 8px 16px;
+}
+[data-color="apple-music"] .btn-secondary:hover,
+[data-color="apple-music"] .playlist-action-btn:not(.primary):not(.danger):hover {
+  background: rgba(255, 255, 255, 0.1) !important;
+  color: #fff !important;
+}
+
+/* 危险按钮：红色文字 */
+[data-color="apple-music"] .btn-danger,
+[data-color="apple-music"] .playlist-action-btn.danger {
+  background: transparent !important;
+  color: var(--primary-color) !important;
+  border: none !important;
+}
+
+/* --- 开关（switch）--- */
+[data-color="apple-music"] input:checked + .slider {
+  background-color: var(--primary-color) !important;
+}
+
+/* --- 进度条 / 滑块：Apple Music 原生规范 --- */
+/* 轨道 3px 高 */
+[data-color="apple-music"] .progress-slider::-webkit-slider-runnable-track,
+[data-color="apple-music"] .volume-slider::-webkit-slider-runnable-track,
+[data-color="apple-music"] .intensity-slider::-webkit-slider-runnable-track,
+[data-color="apple-music"] .eq-slider::-webkit-slider-runnable-track {
+  height: 3px !important;
+  background: rgba(255, 255, 255, 0.25) !important;
+  border-radius: 2px !important;
+}
+
+/* 手柄 10px 白色圆 */
+[data-color="apple-music"] .progress-slider::-webkit-slider-thumb,
+[data-color="apple-music"] .volume-slider::-webkit-slider-thumb,
+[data-color="apple-music"] .intensity-slider::-webkit-slider-thumb,
+[data-color="apple-music"] .eq-slider::-webkit-slider-thumb {
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  width: 10px !important;
+  height: 10px !important;
+  border-radius: 50% !important;
+  background: #fff !important;
+  border: none !important;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3) !important;
+  margin-top: -3.5px !important;
+}
+[data-color="apple-music"] .progress-slider::-moz-range-thumb,
+[data-color="apple-music"] .volume-slider::-moz-range-thumb,
+[data-color="apple-music"] .intensity-slider::-moz-range-thumb,
+[data-color="apple-music"] .eq-slider::-moz-range-thumb {
+  width: 10px !important;
+  height: 10px !important;
+  border-radius: 50% !important;
+  background: #fff !important;
+  border: none !important;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3) !important;
+}
+
+/* 已填充部分用红色 */
+[data-color="apple-music"] .progress-fill {
+  background: var(--primary-color) !important;
+}
+[data-color="apple-music"] .progress-slider::-webkit-slider-thumb:hover,
+[data-color="apple-music"] .volume-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
+}
+
+/* --- 渐变文字：统一使用 text-primary --- */
+[data-color="apple-music"] .card-title,
+[data-color="apple-music"] .logo,
+[data-color="apple-music"] .mine-title,
+[data-color="apple-music"] .playlist-list-title,
+[data-color="apple-music"] .modal h2,
+[data-color="apple-music"] .track-info h2,
+[data-color="apple-music"] .playlist-name,
+[data-color="apple-music"] .settings-header h2 {
+  background: none !important;
+  -webkit-text-fill-color: currentColor !important;
+  color: var(--text-primary) !important;
+}
+
+/* Apple Music 红色品牌文字：主页顶栏 Pink Music + 欢迎区标题 */
+[data-color="apple-music"] .brand,
+[data-color="apple-music"] .text-gradient,
+[data-color="apple-music"] .hero-section h2,
+[data-color="apple-music"] .hero-section p {
+  background: none !important;
+  -webkit-text-fill-color: currentColor !important;
+  color: var(--primary-color) !important;
+}
+
+/* --- 标签徽章：红色描边透明底 --- */
+[data-color="apple-music"] .version,
+[data-color="apple-music"] .bili-fav-badge,
+[data-color="apple-music"] .default-badge {
+  background: transparent !important;
+  color: var(--primary-color) !important;
+  border: 1px solid var(--primary-color) !important;
+  border-radius: 4px !important;
+}
+
+/* --- 导航项：Apple Music 侧边栏风格 --- */
+[data-color="apple-music"] .nav-item,
+[data-color="apple-music"] .playlist-item {
+  border-radius: 4px !important;
+  padding: 6px 12px !important;
+  position: relative;
+}
+[data-color="apple-music"] .nav-item::before,
+[data-color="apple-music"] .nav-item::after {
+  display: none !important;
+}
+/* 选中态：左侧 3px 红色竖条 */
+[data-color="apple-music"] .nav-item.active {
+  background: rgba(255, 255, 255, 0.12) !important;
+  color: #fff !important;
+  position: relative;
+}
+[data-color="apple-music"] .nav-item.active::before {
+  content: '' !important;
+  display: block !important;
+  position: absolute !important;
+  left: 0 !important;
+  top: 4px !important;
+  bottom: 4px !important;
+  width: 3px !important;
+  background: var(--primary-color) !important;
+  border-radius: 0 2px 2px 0 !important;
+}
+
+/* --- Dock：毛玻璃胶囊 + 弱阴影 --- */
+[data-color="apple-music"] .dock-track {
+  background: var(--dock-bg) !important;
+  border: 1px solid var(--dock-border) !important;
+  box-shadow: var(--dock-shadow) !important;
+  backdrop-filter: blur(20px) !important;
+  -webkit-backdrop-filter: blur(20px) !important;
+}
+[data-color="apple-music"] .dock-item.active {
+  background: rgba(255, 255, 255, 0.14) !important;
+  color: var(--primary-color) !important;
+  box-shadow: none !important;
+}
+
+/* --- 顶栏：毛玻璃风格 --- */
+[data-color="apple-music"] .topbar-btn {
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+  border: none !important;
+  border-radius: 6px !important;
+  width: 36px;
+  height: 36px;
+  padding: 0 !important;        /* 去掉基础 padding，避免挤压 18px 图标 */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+[data-color="apple-music"] .topbar-btn svg {
+  width: 18px !important;
+  height: 18px !important;
+}
+[data-color="apple-music"] .topbar-btn:hover {
+  background: rgba(255, 255, 255, 0.1) !important;
+  color: #fff !important;
+}
+
+[data-color="apple-music"] .topbar-user,
+[data-color="apple-music"] .topbar-login {
+  width: auto !important;
+  padding: 8px 14px !important;
+  gap: 6px !important;
+}
+
+[data-color="apple-music"] .color-apple-music {
+  background: #FF3B30 !important;
+  border-radius: 50% !important;
+}
+
+/* ============================================================
+   Apple Music 主题专用：歌曲背景页 / 大屏播放页
+   - 用当前播放歌曲封面作全屏背景（缩放填充 + 25px 高斯模糊）
+   - 在视觉上覆盖默认的 AudioVisualizer / 渐变 fallback
+   - 前景内容（封面 + 文字）保持原样，浮在模糊背景之上
+   ============================================================ */
+.player-page-cover-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  /* 强制硬件加速 + 滤镜性能提示 */
+  will-change: filter, transform;
+  transform: translateZ(0);
+  background: var(--bg-primary);
+}
+
+.player-page-cover-bg__img {
+  position: absolute;
+  /* 关键：让图片至少放大到 1.4 倍视口，覆盖模糊后边缘可能露出的白边 */
+  top: -10%;
+  left: -10%;
+  width: 120%;
+  height: 120%;
+  object-fit: cover;
+  filter: blur(25px) saturate(1.4) brightness(0.85);
+  transform: scale(1.15);
+  transition: opacity 0.4s ease;
+  will-change: filter, transform, opacity;
+}
+
+/* 极轻量遮罩：保证前景白/红文字始终可读 */
+/* 深色 Apple Music（默认）：暗遮罩 + 微暖色叠加，模仿原声氛围 */
+.player-page-cover-bg::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(180deg,
+      rgba(0, 0, 0, 0.40) 0%,
+      rgba(0, 0, 0, 0.55) 50%,
+      rgba(0, 0, 0, 0.70) 100%);
+  pointer-events: none;
+}
+
+/* 浅色模式（所有主题）：更轻的遮罩 */
+[data-theme="light"] .player-page-cover-bg::after {
+  background:
+    linear-gradient(180deg,
+      rgba(255, 255, 255, 0.15) 0%,
+      rgba(255, 255, 255, 0.30) 50%,
+      rgba(255, 255, 255, 0.50) 100%);
+}
+
+/* Apple Music 主题下，强制覆盖 .player-page / .player-page.no-visualizer 默认背景
+   （AudioVisualizer 在该主题下完全不渲染） */
+[data-color="apple-music"] .player-page {
+  background: var(--bg-primary) !important;
+}
+
+[data-color="apple-music"] .player-page::before {
+  background: transparent !important;
+}
+
+/* Apple Music 主题下的播放页装饰调整：
+   - 顶部/底部暗角不需要了，背景已经够暗 / 够亮
+   - 让 .player-page-content 的暗角也去掉 */
+[data-color="apple-music"] .player-page-content::before {
+  background: transparent !important;
+}
+
+/* Apple Music 主题下，前景元素（封面/标题）描边红色 */
+[data-color="apple-music"] .album-art {
+  border: 2px solid var(--apple-stroke) !important;
+  box-shadow: 0 4px 18px rgba(252, 60, 68, 0.18) !important;
+  background: var(--bg-secondary) !important;
+}
+
+[data-color="apple-music"] .album-art::before,
+[data-color="apple-music"] .album-art::after {
+  background: none !important;
+}
+
+/* 标题改纯黑（深色模式反白） */
+[data-color="apple-music"] .track-info h2,
+[data-color="apple-music"] .track-info h3 {
+  background: none !important;
+  -webkit-text-fill-color: currentColor !important;
+  color: var(--text-primary) !important;
+}
+
+[data-color="apple-music"] .control-btn-large,
+[data-color="apple-music"] .big-control-btn,
+[data-color="apple-music"] .option-btn,
+[data-color="apple-music"] .close-btn,
+[data-color="apple-music"] .back-btn {
+  color: var(--text-primary) !important;
+}
+
+/* Apple Music 主题：标题/时长等文字跟随主题色（覆盖硬编码白色） */
+[data-color="apple-music"] .header-title,
+[data-color="apple-music"] .header-artist,
+[data-color="apple-music"] .progress-time,
+[data-color="apple-music"] .episode-title,
+[data-color="apple-music"] .episode-part,
+[data-color="apple-music"] .series-item,
+[data-color="apple-music"] .episode-item,
+[data-color="apple-music"] .series-header h3,
+[data-color="apple-music"] .playlist-manager-header h3 {
+  color: var(--text-primary) !important;
+}
+[data-color="apple-music"] .header-artist,
+[data-color="apple-music"] .progress-time,
+[data-color="apple-music"] .episode-number,
+[data-color="apple-music"] .episode-index,
+[data-color="apple-music"] .episode-duration,
+[data-color="apple-music"] .episode-duration-text {
+  color: var(--text-muted) !important;
+}
+/* 系列/分P 面板底色用主题底色（默认是暗色 rgba(20,20,20,0.95)） */
+[data-color="apple-music"] .series-panel,
+[data-color="apple-music"] .playlist-manager-panel {
+  background: var(--bg-card) !important;
+  border-top: 1.5px solid var(--apple-stroke) !important;
+}
+[data-color="apple-music"] .series-item,
+[data-color="apple-music"] .episode-item {
+  background: var(--bg-secondary) !important;
+  border: 1.5px solid var(--apple-stroke) !important;
+  color: var(--text-primary) !important;
+  border-radius: 8px !important;
+}
+[data-color="apple-music"] .series-item:hover,
+[data-color="apple-music"] .episode-item:hover {
+  background: var(--bg-card-hover) !important;
+}
+[data-color="apple-music"] .series-item.active,
+[data-color="apple-music"] .episode-item.active {
+  background: var(--primary-color) !important;
+  color: #fff !important;
+  border-color: var(--primary-color) !important;
+}
+
+[data-color="apple-music"] .control-btn-large:hover,
+[data-color="apple-music"] .big-control-btn:hover,
+[data-color="apple-music"] .option-btn:hover {
+  color: var(--primary-color) !important;
+}
+
+/* 进度条 / 滑块：纯红填充 */
+[data-color="apple-music"] .progress-fill {
+  background: var(--primary-color) !important;
+}
+[data-color="apple-music"] .progress-bar,
+[data-color="apple-music"] .progress-bar-wrapper {
+  background: rgba(0, 0, 0, 0.08) !important;
+}
+[data-theme="dark"][data-color="apple-music"] .progress-bar,
+[data-theme="dark"][data-color="apple-music"] .progress-bar-wrapper {
+  background: rgba(255, 255, 255, 0.15) !important;
+}
+
+/* Apple Music 主题：所有按钮及 UI 文字元素使用圆角+无边框设计
+   文字底部用白色弱阴影与下层界面分隔，摒弃红色描边 */
+
+/* 顶角返回按钮：无边框，白色文字 + 白色柔阴影分隔 */
+[data-color="apple-music"] .back-btn {
+  background: transparent !important;
+  color: #fff !important;
+  border: none !important;
+  border-radius: 999px !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.4) !important;
+}
+[data-color="apple-music"] .back-btn svg {
+  filter: drop-shadow(0 1px 4px rgba(0, 0, 0, 0.35));
+}
+[data-color="apple-music"] .back-btn:hover {
+  background: rgba(0, 0, 0, 0.2) !important;
+  color: #fff !important;
+}
+
+/* Apple Music 主题下：MineView 主题设置控件 */
+[data-color="apple-music"] .theme-mode-btn {
+  border: 1.5px solid var(--apple-stroke) !important;
+  color: var(--text-primary) !important;
+  background: transparent !important;
+  border-radius: 999px !important;
+}
+[data-color="apple-music"] .theme-mode-btn:hover {
+  background: var(--primary-color) !important;
+  color: #fff !important;
+}
+[data-color="apple-music"] .theme-mode-btn.active {
+  background: var(--primary-color) !important;
+  color: #fff !important;
+  border-color: var(--primary-color) !important;
+}
+[data-color="apple-music"] .color-swatch-btn {
+  border-color: var(--apple-stroke) !important;
+  box-shadow: none !important;
+}
+[data-color="apple-music"] .color-swatch-btn.active {
+  box-shadow: 0 0 0 2px var(--bg-primary), 0 0 0 4px var(--primary-color) !important;
+  border-color: var(--text-primary) !important;
 }

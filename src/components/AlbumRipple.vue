@@ -32,11 +32,13 @@ let HEIGHT = 0
 let dpr = 1
 let isDark = true
 let themeColor = ''
+let isAppleMusic = false
 
 function readTheme() {
   const style = getComputedStyle(document.documentElement)
   themeColor = (style.getPropertyValue('--primary-color') || '#FF69B4').trim()
   isDark = document.documentElement.getAttribute('data-theme') !== 'light'
+  isAppleMusic = document.documentElement.getAttribute('data-color') === 'apple-music'
 }
 
 // === 基础环参数（与 intensity 解耦的常量）===
@@ -258,7 +260,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div :class="['album-ripple', { 'is-dark': isDark, 'is-light': !isDark }]">
+  <div :class="['album-ripple', { 'is-dark': isDark, 'is-light': !isDark, 'is-apple-music': isAppleMusic }]">
     <canvas ref="domCanvas" class="album-ripple-canvas"></canvas>
   </div>
 </template>
@@ -284,5 +286,10 @@ onBeforeUnmount(() => {
      整页重绘导致波纹"闪" */
   will-change: filter;
   transform: translateZ(0);
+}
+
+/* Apple Music 主题：隐藏波纹（Apple Music 原生没有这种视觉效果） */
+.album-ripple.is-apple-music {
+  display: none !important;
 }
 </style>

@@ -29,6 +29,9 @@ export const EQ_DB_MAX = 12
 export const EQ_DB_STEP = 0.5
 
 // 预置 EQ 曲线（dB）。参考常见播放器的图式 EQ 取值。
+// 注意：bass 预置原本是 [8, 6, 4, 2, ...]——+8dB 在 31Hz 太极端，
+// 哪怕有 compressor 兜底，多数 bass 重的曲子也会被重度压缩（"喘气"感）。
+// 降到 [5, 4, 3, 1, ...] 后仍有明显的低频体感，但留足头部空间给 compressor。
 export const EQ_PRESETS = {
   flat:      [ 0,  0,  0,  0,  0,  0,  0,  0,  0,  0],
   pop:       [-1,  2,  4,  4,  1, -1, -1,  1,  2,  3],
@@ -37,7 +40,7 @@ export const EQ_PRESETS = {
   classical: [ 4,  3,  2,  0,  0,  0, -1, -1, -1, -2],
   electronic:[ 5,  3,  0,  0, -2,  1,  0,  1,  4,  5],
   vocal:     [-2, -1,  0,  3,  5,  5,  3,  0, -1, -2],
-  bass:      [ 8,  6,  4,  2,  0,  0,  0,  0,  0,  0]
+  bass:      [ 5,  4,  3,  1,  0,  0,  0,  0,  0,  0]
 }
 
 export const EQ_PRESET_KEYS = ['flat', 'pop', 'rock', 'jazz', 'classical', 'electronic', 'vocal', 'bass']

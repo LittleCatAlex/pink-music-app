@@ -7,7 +7,10 @@
 // 2. AudioContext 在浏览器自动播放策略下必须由用户手势创建或 resume，
 //    我们在用户首次点击播放/打开大屏时 lazy 创建。
 // 3. 切歌时旧的 source 自动停止（无引用），新 source 由 attach 接管。
-// 4. 信号链路：source → EQ 链（10 段 BiquadFilter）→ analyser → destination。
+// 4. 信号链路：
+//      source → EQ 链(10 段 BiquadFilter) → analyser → compressor → destination
+//    compressor 是安全限幅器：EQ 任何 boost 一旦把信号推过阈值就自动压回安全区，
+//    防止低频叠加 / 预置过激导致 destination 处数字削波（"麦炸了"）。
 
 import { initEQ, destroyEQ } from './audioEQ'
 
@@ -15,6 +18,7 @@ let audioContext = null
 let currentSource = null
 let currentAudio = null
 let analyser = null
+let compressor = null  // 安全限幅器：analyser → compressor → destination
 
 function ensureContext() {
   if (audioContext) return audioContext
@@ -46,9 +50,12 @@ export function attachAudioAnalyser(audioEl) {
   }
 
   try {
-    // 旧元素解绑：断开 source 即可，无引用后会被 GC
+    // 旧元素解绑：断开 source 和 analyser，无引用后会被 GC
     if (currentSource) {
       try { currentSource.disconnect() } catch (_) {}
+    }
+    if (analyser) {
+      try { analyser.disconnect() } catch (_) {}
     }
     currentAudio = audioEl
     currentSource = ctx.createMediaElementSource(audioEl)
@@ -57,7 +64,7 @@ export function attachAudioAnalyser(audioEl) {
     analyser.smoothingTimeConstant = 0.75
 
     // 把 EQ 链串到 source 和 analyser 之间
-    // signal chain: source → eq.input → [10 biquad] → eq.output → analyser → destination
+    // signal chain: source → eq.input → [10 biquad] → eq.output → analyser
     const eq = initEQ(ctx)
     if (eq) {
       currentSource.connect(eq.input)
@@ -65,8 +72,22 @@ export function attachAudioAnalyser(audioEl) {
     } else {
       currentSource.connect(analyser)
     }
-    // 关键：analyser 也要连到 destination，否则音频会被 mute
-    analyser.connect(ctx.destination)
+
+    // 安全限幅器：ctx 级单例，跨切歌保持同一实例
+    // - threshold -6dB：信号超过 -6dBFS 才开始介入
+    // - knee 6dB：软拐点，过渡平滑不"咔哒"
+    // - ratio 4:1：温和限制，不会把音乐压成"贴地砖"
+    // - attack 3ms / release 250ms：能抓住 kick 瞬态，听感不"喘气"
+    if (!compressor) {
+      compressor = ctx.createDynamicsCompressor()
+      compressor.threshold.value = -6
+      compressor.knee.value = 6
+      compressor.ratio.value = 4
+      compressor.attack.value = 0.003
+      compressor.release.value = 0.25
+      compressor.connect(ctx.destination)
+    }
+    analyser.connect(compressor)
     return analyser
   } catch (err) {
     console.error('[audioAnalyser] attach 失败:', err)
@@ -92,6 +113,7 @@ export function isAnalyserReady() {
 export function destroyAudioAnalyser() {
   try { if (currentSource) currentSource.disconnect() } catch (_) {}
   try { if (analyser) analyser.disconnect() } catch (_) {}
+  try { if (compressor) compressor.disconnect() } catch (_) {}
   destroyEQ()
   if (audioContext) {
     audioContext.close().catch(() => {})
@@ -100,4 +122,5 @@ export function destroyAudioAnalyser() {
   currentSource = null
   currentAudio = null
   analyser = null
+  compressor = null
 }

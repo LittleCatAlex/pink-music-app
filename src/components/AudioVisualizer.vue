@@ -26,11 +26,15 @@ const domCanvas = ref(null)
 // === 主题色（懒读 + MutationObserver 监听主题变化） ===
 let themeColor = ''
 let isDark = true
+// Apple Music 主题下整体作为频谱条的"画布容器"会盖住 .player-page-cover-bg
+// 的封面，所以这里把背景层变透明，让封面背景露出来
+let isAppleMusic = false
 
 function readTheme() {
   const style = getComputedStyle(document.documentElement)
   themeColor = (style.getPropertyValue('--primary-color') || '#FF69B4').trim()
   isDark = document.documentElement.getAttribute('data-theme') !== 'light'
+  isAppleMusic = document.documentElement.getAttribute('data-color') === 'apple-music'
 }
 
 // === 渲染状态 ===
@@ -249,7 +253,7 @@ defineExpose({ start, stop })
 </script>
 
 <template>
-  <div :class="['audio-visualizer', { 'is-dark': isDark, 'is-light': !isDark }]">
+  <div :class="['audio-visualizer', { 'is-dark': isDark, 'is-light': !isDark, 'is-apple-music': isAppleMusic }]">
     <!-- 暗色底层 + 径向渐变，让频谱条有舞台感 -->
     <div class="audio-visualizer-base"></div>
     <canvas ref="domCanvas" class="audio-visualizer-canvas"></canvas>
@@ -275,6 +279,14 @@ defineExpose({ start, stop })
 /* 浅色主题背景：白 → 极淡主题色，让频谱条也有对比度 */
 .audio-visualizer.is-light {
   background: linear-gradient(180deg, #FAFAFC 0%, #F0E8F4 100%);
+}
+
+/* Apple Music 主题：背景透明，让 .player-page-cover-bg 的封面露出来 */
+.audio-visualizer.is-apple-music {
+  background: transparent !important;
+}
+.audio-visualizer.is-apple-music .audio-visualizer-base {
+  display: none !important;
 }
 
 /* 中心径向高光：让频谱条集中在中心区域时更有舞台感 */

@@ -1,29 +1,13 @@
 <script setup>
 import { ref } from 'vue'
-import { useThemeStore, usePlaylistStore, usePlayerStore, useSettingsStore } from '@/stores'
+import { usePlaylistStore, usePlayerStore, useSettingsStore } from '@/stores'
 import { appConfirm } from '@/utils/confirm'
 
-const themeStore = useThemeStore()
 const playlistStore = usePlaylistStore()
 const playerStore = usePlayerStore()
 const settingsStore = useSettingsStore()
 
-const showThemePanel = ref(false)
 const newPlaylistName = ref('')
-
-function toggleThemePanel() {
-  showThemePanel.value = !showThemePanel.value
-}
-
-function selectTheme(theme) {
-  themeStore.setTheme(theme)
-  showThemePanel.value = false
-}
-
-function selectColor(color) {
-  themeStore.setColor(color)
-  showThemePanel.value = false
-}
 
 function goToHome() {
   playlistStore.setCurrentView('home')
@@ -126,11 +110,6 @@ function deletePlaylist(playlist) {
   <aside class="sidebar">
     <div class="sidebar-header">
       <h1 class="logo">Pink Music</h1>
-      <button class="theme-toggle" @click="toggleThemePanel" title="主题设置">
-        <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
-          <path d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
-        </svg>
-      </button>
     </div>
 
     <nav>
@@ -203,38 +182,6 @@ function deletePlaylist(playlist) {
         <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M19.43 12.98c.04-.32.07-.64.07-.98s-.03-.66-.07-.98l2.11-1.65c.19-.15.24-.42.12-.64l-2-3.46c-.12-.22-.39-.3-.61-.22l-2.49 1c-.52-.39-1.08-.7-1.66-.94l-.38-2.65c-.03-.24-.24-.42-.48-.42h-4c-.24 0-.45.18-.48.42l-.38 2.65c-.58.24-1.14.55-1.66.94l-2.49-1c-.22-.08-.49 0-.61.22l-2 3.46c-.12.22-.07.49.12.64l2.11 1.65c-.04.32-.07.64-.07.98s.03.66.07.98l-2.11 1.65c-.19.15-.24.42-.12.64l2 3.46c.12.22.39.3.61.22l2.49-1c.52.39 1.08.7 1.66.94l.38 2.65c.03.24.24.42.48.42h4c.24 0 .45-.18.48-.42l.38-2.65c.58-.24 1.14-.55 1.66-.94l2.49 1c.22.08.49 0 .61-.22l2-3.46c.12-.22.07-.49-.12-.64l-2.11-1.65zm-7.43 2.52c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></svg>
         <span>设置</span>
       </button>
-    </div>
-
-    <div v-if="showThemePanel" class="theme-panel">
-      <div class="theme-options">
-        <div class="theme-group">
-          <h4>主题模式</h4>
-          <div class="theme-buttons">
-            <button 
-              v-for="theme in ['dark', 'light']" 
-              :key="theme" 
-              class="theme-btn" 
-              :class="{ active: themeStore.currentTheme === theme }" 
-              @click="selectTheme(theme)"
-            >
-              {{ theme === 'dark' ? '深色' : '浅色' }}
-            </button>
-          </div>
-        </div>
-        <div class="theme-group">
-          <h4>主题颜色</h4>
-          <div class="color-options">
-            <button 
-              v-for="color in ['pink', 'purple', 'blue', 'green', 'orange']" 
-              :key="color" 
-              class="color-btn" 
-              :class="{ active: themeStore.currentColor === color }" 
-              :style="{ backgroundColor: color === 'pink' ? '#FF69B4' : color === 'purple' ? '#9C27B0' : color === 'blue' ? '#2196F3' : color === 'green' ? '#4CAF50' : '#FF9800' }" 
-              @click="selectColor(color)"
-            />
-          </div>
-        </div>
-      </div>
     </div>
 
     <div v-if="playlistStore.showCreatePlaylistModal" class="modal-overlay" @click.self="cancelCreatePlaylist">

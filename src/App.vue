@@ -9,7 +9,7 @@ import MineView from './components/MineView.vue'
 import LyricDisplay from './components/player/LyricDisplay.vue'
 import AudioVisualizer from './components/AudioVisualizer.vue'
 import AlbumRipple from './components/AlbumRipple.vue'
-import { useLyricStore, usePlayerStore, useSettingsStore, useDownloadStore, useUserStore, usePlaylistStore } from './stores'
+import { useLyricStore, usePlayerStore, useSettingsStore, useDownloadStore, useUserStore, usePlaylistStore, useThemeStore } from './stores'
 import DownloadManager from './components/DownloadManager.vue'
 import LoginPanel from './components/LoginPanel.vue'
 import { applyLiquidGlass, destroyLiquidGlass } from './composables/useLiquidGlass'
@@ -25,6 +25,7 @@ const settingsStore = useSettingsStore()
 const downloadStore = useDownloadStore()
 const userStore = useUserStore()
 const playlistStore = usePlaylistStore()
+const themeStore = useThemeStore()
 
 // Helper function to strip HTML tags
 function stripHtmlTags(html) {
@@ -76,8 +77,14 @@ function setupMediaSessionHandlers() {
   });
 }
 
-const currentTheme = ref(localStorage.getItem('pink-music-theme') || 'dark')
-const currentColor = ref(localStorage.getItem('pink-music-color') || 'pink')
+// 主题由 themeStore 统一管理（MineView 设置 tab 提供切换入口），
+// 启动时通过 themeStore.initTheme() 同步到 <html> 标签，详见 onMounted。
+
+// 顶栏一键切换深色/浅色模式
+function toggleThemeMode() {
+  const next = themeStore.currentTheme === 'dark' ? 'light' : 'dark'
+  themeStore.setTheme(next)
+}
 const currentView = computed({
   get: () => playlistStore.currentView,
   set: (val) => playlistStore.setCurrentView(val)
@@ -96,6 +103,12 @@ const isLoadingFavResources = ref(false)
 // 收藏夹分页拉取进度：{ current, total, loaded }
 const favSyncProgress = ref({ current: 0, total: 0, loaded: 0 })
 const currentTrack = ref(null)
+// 大屏播放页封面模糊背景 URL（所有主题通用）：当前歌曲封面，走 fixCoverUrl + fallback
+// 在音频可视化关闭时作为全屏毛玻璃背景展示
+const coverBgUrl = computed(() => {
+  const raw = fixCoverUrl(currentTrack.value?.cover)
+  return raw || 'https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=1200'
+})
 const isPlaying = ref(false)
 const showPlayerPage = ref(false)
 const audioElement = ref(null)
@@ -104,7 +117,6 @@ const duration = ref(0)
 const isSeeking = ref(false)
 function onSeekStart() { isSeeking.value = true }
 function onSeekEnd() { isSeeking.value = false }
-const showThemePanel = ref(false)
 const isAudioLoading = ref(false)
 const audioError = ref('')
 const bufferedProgress = ref(0)
@@ -175,30 +187,14 @@ const playModes = [
   }
 ]
 
-const colorOptions = [
-  { value: 'pink', label: '粉色' },
-  { value: 'purple', label: '紫色' },
-  { value: 'blue', label: '蓝色' },
-  { value: 'green', label: '绿色' },
-  { value: 'orange', label: '橙色' }
-]
-
-function toggleTheme() {
-  showThemePanel.value = !showThemePanel.value
-}
-
-function setTheme(mode) {
-  currentTheme.value = mode
-  localStorage.setItem('pink-music-theme', mode)
-  document.documentElement.setAttribute('data-theme', mode)
-  showThemePanel.value = false
-}
-
-function setColor(color) {
-  currentColor.value = color
-  localStorage.setItem('pink-music-color', color)
-  document.documentElement.setAttribute('data-color', color)
-  showThemePanel.value = false
+// 主题切换：旧 App.vue 里的 colorOptions / toggleTheme / setTheme / setColor
+// 全部迁移到 MineView 设置 tab。这里只保留一个"跳到设置"的入口函数
+// 用于顶栏按钮 / 全局快捷入口。
+function openSettings() {
+  // 1) 切到"我的"视图（MineView 在 currentView === 'mine' 时挂载）
+  playlistStore.setCurrentView('mine')
+  // 2) 派发全局事件，MineView 监听后把 activeTab 切到 'settings'
+  window.dispatchEvent(new CustomEvent('pink-music:open-settings'))
 }
 
 function goToHome() {
@@ -1494,8 +1490,8 @@ function setupLiquidGlass() {
 }
 
 onMounted(async () => {
-  document.documentElement.setAttribute('data-theme', currentTheme.value)
-  document.documentElement.setAttribute('data-color', currentColor.value)
+  // 主题应用：统一交给 themeStore（兼容旧版 localStorage 键名）
+  themeStore.initTheme()
   loadPlaylists()
   loadRecommendedMusic()
   setupMediaSessionHandlers()
@@ -1540,11 +1536,18 @@ onUnmounted(() => {
         <h1 class="brand">Pink Music</h1>
       </div>
       <div class="topbar-right">
-        <button class="topbar-btn" @click="toggleTheme" title="主题设置">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18" v-if="currentTheme === 'dark'">
-            <path d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/>
+        <!-- 一键切换深色/浅色模式，当前为 dark 时显示太阳图标（切浅色），
+             当前为 light 时显示月亮图标（切深色）。直接调用 themeStore。
+             Apple Music 主题下图标尺寸保持 18px，不受主题覆盖影响。 -->
+        <button
+          class="topbar-btn theme-quick-toggle"
+          :title="themeStore.currentTheme === 'dark' ? '切换到浅色模式' : '切换到深色模式'"
+          @click="toggleThemeMode"
+        >
+          <svg v-if="themeStore.currentTheme === 'dark'" viewBox="0 0 24 24" fill="currentColor" width="18" height="18">
+            <path d="M6.76 4.84l-1.8-1.79-1.41 1.41 1.79 1.79 1.42-1.41zM4 10.5H1v2h3v-2zm9-9.95h-2V3.5h2V.55zm7.45 3.91l-1.41-1.41-1.79 1.79 1.41 1.41 1.79-1.79zm-3.21 13.7l1.79 1.8 1.41-1.41-1.8-1.79-1.4 1.4zM20 10.5v2h3v-2h-3zm-8-5c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6-2.69-6-6-6zm-1 16.95h2V19.5h-2v2.95zm-7.45-3.91l1.41 1.41 1.79-1.8-1.41-1.41-1.79 1.8z"/>
           </svg>
-          <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18" v-else>
+          <svg v-else viewBox="0 0 24 24" fill="currentColor" width="18" height="18">
             <path d="M12 3c-4.97 0-9 4.03-9 9s4.03 9 9 9 9-4.03 9-9c0-.46-.04-.92-.1-1.36-.98 1.37-2.58 2.26-4.4 2.26-2.98 0-5.4-2.42-5.4-5.4 0-1.81.89-3.42 2.26-4.4-.44-.06-.9-.1-1.36-.1z"/>
           </svg>
         </button>
@@ -2169,12 +2172,23 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <div
-      v-if="showPlayerPage && currentTrack"
-      class="player-page"
-      :class="{ active: showPlayerPage, 'no-visualizer': !settingsStore.audioVisualizerEnabled }"
-      @click="closePlayerPage"
-    >
+    <Transition name="player-zoom">
+      <div
+        v-if="showPlayerPage && currentTrack"
+        class="player-page"
+        :class="{ active: showPlayerPage, 'no-visualizer': !settingsStore.audioVisualizerEnabled }"
+        @click="closePlayerPage"
+      >
+      <!-- 音频可视化关闭时用当前歌曲封面作全屏模糊背景（所有主题通用） -->
+      <div v-if="!settingsStore.audioVisualizerEnabled" class="player-page-cover-bg" aria-hidden="true">
+        <img
+          class="player-page-cover-bg__img"
+          :src="coverBgUrl"
+          :key="coverBgUrl"
+          @error="$event.target.src='https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=1200'"
+        >
+      </div>
+
       <!-- 左上角：返回 -->
       <button class="back-btn" @click.stop="closePlayerPage">
         <svg viewBox="0 0 24 24" fill="currentColor" width="24" height="24"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
@@ -2312,40 +2326,9 @@ onUnmounted(() => {
         </div>
       </div>
     </div>
+    </Transition>
 
-    <div v-if="showThemePanel" class="theme-panel">
-      <h3>选择主题颜色</h3>
-      <div class="theme-colors">
-        <button
-          v-for="color in colorOptions"
-          :key="color.value"
-          class="theme-color-btn"
-          :class="['color-' + color.value, { active: currentColor === color.value }]"
-          @click="setColor(color.value)"
-          :title="color.label"
-        ></button>
-      </div>
-
-      <h3>选择模式</h3>
-      <div class="theme-modes">
-        <button
-          class="theme-mode-btn"
-          :class="{ active: currentTheme.value === 'dark' }"
-          @click="setTheme('dark')"
-        >
-          <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M12 3c-4.97 0-9 4.03-9 9s4.03 9 9 9 9-4.03 9-9c0-.46-.04-.92-.1-1.36-.98 1.37-2.58 2.26-4.4 2.26-2.98 0-5.4-2.42-5.4-5.4 0-1.81.89-3.42 2.26-4.4-.44-.06-.9-.1-1.36-.1z"/></svg>
-          深色
-        </button>
-        <button
-          class="theme-mode-btn"
-          :class="{ active: currentTheme.value === 'light' }"
-          @click="setTheme('light')"
-        >
-          <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M6.76 4.84l-1.8-1.79-1.41 1.41 1.79 1.79 1.42-1.41zM4 10.5H1v2h3v-2zm9-9.95h-2V3.5h2V.55zm7.45 3.91l-1.41-1.41-1.79 1.79 1.41 1.41 1.79-1.79zm-3.21 13.7l1.79 1.8 1.41-1.41-1.8-1.79-1.4 1.4zM20 10.5v2h3v-2h-3zm-8-5c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6-2.69-6-6-6zm-1 16.95h2V19.5h-2v2.95zm-7.45-3.91l1.41 1.41 1.79-1.8-1.41-1.41-1.79 1.8z"/></svg>
-          浅色
-        </button>
-      </div>
-    </div>
+    <!-- 旧版 showThemePanel 主题面板已迁移到 MineView 设置 tab -->
 
     <div v-if="showCreatePlaylistModal" class="modal-overlay" @click="cancelCreatePlaylist">
       <div class="modal" @click.stop>

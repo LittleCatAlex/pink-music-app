@@ -1,6 +1,6 @@
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
-import { useUserStore, usePlayerStore, usePlaylistStore, useSettingsStore } from '../stores'
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { useUserStore, usePlayerStore, usePlaylistStore, useSettingsStore, useThemeStore } from '../stores'
 import { parseDuration } from '../utils/bilibili'
 import { EQ_BANDS, EQ_PRESET_KEYS, EQ_PRESET_LABELS, EQ_DB_MIN, EQ_DB_MAX } from '../utils/audioEQ'
 
@@ -8,6 +8,35 @@ const userStore = useUserStore()
 const playerStore = usePlayerStore()
 const playlistStore = usePlaylistStore()
 const settingsStore = useSettingsStore()
+const themeStore = useThemeStore()
+
+// 主题模式与主题颜色：与侧边栏的旧主题面板合并迁移到此处
+// 切换即写 localStorage + 更新 <html data-theme / data-color>，与 themeStore 保持唯一来源
+const themeOptions = [
+  { value: 'dark', label: '深色' },
+  { value: 'light', label: '浅色' }
+]
+// Apple Music 主题通过 data-color="apple-music" 识别，
+// 在浅色模式下用纯白底+纯黑文字+红色描边，深色模式下用纯黑底+白色文字+红色描边
+const colorOptions = [
+  { value: 'pink', label: '粉色', color: '#FF69B4' },
+  { value: 'purple', label: '紫色', color: '#9C27B0' },
+  { value: 'blue', label: '蓝色', color: '#2196F3' },
+  { value: 'green', label: '绿色', color: '#4CAF50' },
+  { value: 'orange', label: '橙色', color: '#FF9800' },
+  { value: 'apple-music', label: 'Apple Music', color: '#FC3C44' }
+]
+function selectTheme(t) {
+  themeStore.setTheme(t)
+}
+function selectColor(c) {
+  themeStore.setColor(c)
+}
+// 当前选中颜色的中文标签（显示在色板右侧，辅助用户确认）
+const currentColorLabel = computed(() => {
+  const found = colorOptions.find(c => c.value === themeStore.currentColor)
+  return found ? found.label : ''
+})
 
 const activeTab = ref('profile')
 const cacheSize = ref(0)
@@ -215,7 +244,17 @@ defineExpose({
 onMounted(() => {
   getCurrentDownloadDirectory()
   calculateCacheSize()
+  // 监听顶栏"主题设置"按钮派发的全局事件：切到 settings tab
+  window.addEventListener('pink-music:open-settings', handleOpenSettings)
 })
+
+onBeforeUnmount(() => {
+  window.removeEventListener('pink-music:open-settings', handleOpenSettings)
+})
+
+function handleOpenSettings() {
+  activeTab.value = 'settings'
+}
 </script>
 
 <template>
@@ -237,8 +276,11 @@ onMounted(() => {
       </div>
     </div>
 
+    <!-- 三个二级 tab 切换：用 <Transition name="page" mode="out-in"> 复用 App.vue 主页切页同款动画
+         （0.35s cubic-bezier(0.16, 1, 0.3, 1) + translateY 16px / 8px），保持"全应用一套节奏" -->
+    <Transition name="page" mode="out-in">
     <!-- 我的 标签 -->
-    <div v-if="activeTab === 'profile'" class="mine-content">
+    <div v-if="activeTab === 'profile'" key="profile" class="mine-content">
       <div class="profile-card glass-card">
         <div v-if="hasUser" class="profile-info">
           <img
@@ -312,7 +354,7 @@ onMounted(() => {
     </div>
 
     <!-- 历史 标签 -->
-    <div v-else-if="activeTab === 'history'" class="mine-content">
+    <div v-else-if="activeTab === 'history'" key="history" class="mine-content">
       <div class="history-header">
         <h3>播放历史</h3>
         <button v-if="playHistory.length > 0" class="btn-secondary" @click="clearPlayHistory">
@@ -346,7 +388,58 @@ onMounted(() => {
     </div>
 
     <!-- 设置 标签 -->
-    <div v-else-if="activeTab === 'settings'" class="mine-content">
+    <div v-else-if="activeTab === 'settings'" key="settings" class="mine-content">
+      <!-- 主题设置：迁移自侧边栏的旧主题面板。
+           模式（深/浅）+ 颜色（含 Apple Music）双层选择。 -->
+      <div class="settings-section glass-card">
+        <h3>主题设置</h3>
+        <div class="setting-item">
+          <label>主题模式</label>
+          <div class="setting-value">
+            <div class="theme-mode-buttons">
+              <button
+                v-for="t in themeOptions"
+                :key="t.value"
+                type="button"
+                class="theme-mode-btn"
+                :class="{ active: themeStore.currentTheme === t.value }"
+                @click="selectTheme(t.value)"
+              >
+                {{ t.label }}
+              </button>
+            </div>
+          </div>
+        </div>
+        <div class="setting-item">
+          <div class="setting-label-with-hint">
+            <label>主题颜色</label>
+            <span class="setting-hint">选择 Apple Music 主题可启用封面模糊背景</span>
+          </div>
+          <div class="setting-value">
+            <div class="color-picker">
+              <div class="color-options-grid">
+                <button
+                  v-for="c in colorOptions"
+                  :key="c.value"
+                  type="button"
+                  class="color-swatch-btn"
+                  :class="['color-' + c.value, { active: themeStore.currentColor === c.value }]"
+                  :style="{ backgroundColor: c.color }"
+                  :title="c.label"
+                  :aria-label="c.label"
+                  @click="selectColor(c.value)"
+                >
+                  <svg v-if="themeStore.currentColor === c.value" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" width="14" height="14">
+                    <polyline points="20 6 9 17 4 12"/>
+                  </svg>
+                </button>
+              </div>
+              <span class="color-current-label">{{ currentColorLabel }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div class="settings-section glass-card">
         <h3>播放设置</h3>
         <div class="setting-item">
@@ -548,7 +641,7 @@ onMounted(() => {
         <div class="about-content">
           <div class="about-header">
             <span class="logo-text">Pink Music</span>
-            <span class="version">v2.2.0</span>
+            <span class="version">v2.3.0</span>
           </div>
           <p class="about-desc">一款优雅的 B 站音乐播放器，让你发现并享受喜欢的音乐。</p>
           <button class="btn-secondary" @click="openGitHub">
@@ -561,6 +654,7 @@ onMounted(() => {
         </div>
       </div>
     </div>
+    </Transition>
 
     <!-- 清理缓存确认 -->
     <div v-if="showClearCacheConfirm" class="modal-overlay" @click="showClearCacheConfirm = false">

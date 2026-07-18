@@ -43,7 +43,10 @@ let scrollReturnTimer = null
 // 大屏模式：视区固定高度（不让 flex 撑过头把工具栏挤没）；
 // 居中由 ResizeObserver 测得的实际视区高度驱动，喂给 trackStyle。
 // 普通模式：紧凑列表，一屏可见 3-4 行
-const LINE_HEIGHT = computed(() => (props.large ? 72 : 36))
+// 行高：把"已唱过的歌词"也会占据的 1 行槽位算进去 —— 大屏 90 / 普通 45，
+// 文本居中后每行上下各多出约 27px / 13px 留白，给呼吸感；viewport / trackStyle
+// / mask 全部自动按新行高重算，不用额外改。
+const LINE_HEIGHT = computed(() => (props.large ? 90 : 45))
 const VIEWPORT_HEIGHT = computed(() => (props.large ? 620 : 200))
 const viewportRef = ref(null)
 const actualViewportHeight = ref(props.large ? 620 : 200)
@@ -387,11 +390,18 @@ function onGlobalKeydown(e) {
             class="lyric-track"
             :style="{ ...trackStyle, height: trackHeight + 'px' }"
           >
+            <!--
+              已唱完的行（i < currentLineIndex）只在"自动跟随"模式下加 past class → 淡出。
+              手动滚动（isManualScrolling=true）期间不生效，全部可见，方便回看上下文。
+            -->
             <div
               v-for="(line, i) in lyricStore.currentLyric.lyrics"
               :key="i"
               class="line"
-              :class="{ active: i === lyricStore.currentLineIndex }"
+              :class="{
+                active: i === lyricStore.currentLineIndex,
+                past: i < lyricStore.currentLineIndex && !isManualScrolling
+              }"
               :style="{ height: LINE_HEIGHT + 'px' }"
               @click="handleLyricClick(line)"
             >{{ line.text }}</div>
@@ -623,7 +633,9 @@ function onGlobalKeydown(e) {
   line-height: 1.4;
   user-select: none;
   /* 频谱条现在只占底部 18%，不与歌词重叠，不再需要 text-shadow */
-  transition: color 0.25s ease, font-size 0.3s ease, transform 0.3s ease;
+  /* opacity 0.45s：与"active → past"过渡同步，让已唱完的行平滑淡出而不是硬切。
+     手滚动模式（isManualScrolling=true）下 past class 不生效，opacity 自动回到 1。 */
+  transition: color 0.25s ease, font-size 0.3s ease, transform 0.3s ease, opacity 0.45s ease;
 }
 .line:hover { color: var(--text-primary); }
 .line.active {
@@ -633,15 +645,21 @@ function onGlobalKeydown(e) {
   /* 活跃行轻微放大，加强焦点感 */
   transform: scale(1.02);
 }
+/* 已唱完的行：在自动跟随模式下完全淡出，但保留槽位高度避免布局跳动。
+   pointer-events: none 防止误点到"看不见"的行触发跳转。 */
+.line.past {
+  opacity: 0;
+  pointer-events: none;
+}
 
 /* 大屏播放页内的歌词（large prop 触发）
    - 字体：Outfit（项目已有的圆润无衬线），无衬线 + 偏粗字重
-   - 普通行 24px / 600，行高 1.5；LINE_HEIGHT 72 足够容纳中英双语行偶尔换行成 2 行
+   - 普通行 24px / 600，行高 1.5；LINE_HEIGHT 90 足够容纳中英双语行偶尔换行成 2 行
    - 活跃行 32px / 800，颜色高亮
    - 整体在 player-page-right 中垂直居中；视区 620px，actions 在底部
    - 视区几何中心 y = 50vh - 4（受 player-page-content 上下 padding 80/48 影响），
      通过 trackStyle 追加 LARGE_SCREEN_CENTER_OFFSET = 4px 把活跃行校正到屏幕正中 (50vh)
-   - 一屏可见 8-9 行（620 / 72 ≈ 8.6） */
+   - 一屏可见 6-7 行（620 / 90 ≈ 6.9，配合 past 行隐藏后视觉上更"干净"） */
 .lyric-stage--large {
   /* 在 .player-page-right (flex stretch) 内不撑满，垂直居中 */
   align-self: center;
