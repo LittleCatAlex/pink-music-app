@@ -1,7 +1,7 @@
 {
   "name": "pink-music",
   "private": true,
-  "version": "2.0.2",
+  "version": "2.2.0",
   "main": "electron/main.js",
   "scripts": {
     "dev": "vite",
@@ -10,7 +10,9 @@
     "electron:dev": "NODE_ENV=development electron . --no-sandbox",
     "electron:build": "npm run build && electron-builder -mw",
     "electron:build:mac": "npm run build && electron-builder --mac",
-    "electron:build:win": "npm run build && electron-builder --win",
+    "electron:build:win:x64": "npm run build && electron-builder --win --x64",
+    "electron:build:win:arm64": "npm run build && electron-builder --win --arm64",
+    "electron:build:win:all": "npm run build && electron-builder --win --x64 --arm64",
     "electron:build:all": "npm run build && electron-builder -mw"
   },
   "dependencies": {
@@ -32,6 +34,7 @@
     "appId": "com.pinkmusic.app",
     "productName": "Pink Music",
     "compression": "maximum",
+    "electronLanguages": ["zh-CN", "en-US"],
     "directories": {
       "output": "release"
     },
@@ -71,8 +74,7 @@
         {
           "target": "nsis",
           "arch": [
-            "x64",
-            "arm64"
+            "x64"
           ]
         }
       ],
@@ -83,7 +85,8 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Pink Music"
+      "shortcutName": "Pink Music",
+      "artifactName": "Pink Music-Setup-${version}-${arch}.${ext}"
     }
   }
 }

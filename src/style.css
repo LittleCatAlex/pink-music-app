@@ -144,7 +144,7 @@
 }
 
 /* 紫色主题 */
-[data-theme="purple"] {
+[data-color="purple"] {
   --primary-color: #A855F7;
   --primary-dark: #7C3AED;
   --primary-light: #C084FC;
@@ -157,7 +157,7 @@
 }
 
 /* 蓝色主题 */
-[data-theme="blue"] {
+[data-color="blue"] {
   --primary-color: #3B82F6;
   --primary-dark: #2563EB;
   --primary-light: #60A5FA;
@@ -170,7 +170,7 @@
 }
 
 /* 绿色主题 */
-[data-theme="green"] {
+[data-color="green"] {
   --primary-color: #22C55E;
   --primary-dark: #16A34A;
   --primary-light: #4ADE80;
@@ -183,7 +183,7 @@
 }
 
 /* 橙色主题 */
-[data-theme="orange"] {
+[data-color="orange"] {
   --primary-color: #F97316;
   --primary-dark: #EA580C;
   --primary-light: #FB923C;
@@ -1720,14 +1720,14 @@ button:active:not(:disabled):not(.no-press),
 .player-page {
   position: fixed;
   inset: 0;
-  background: var(--bg-overlay);
-  backdrop-filter: blur(var(--glass-blur-heavy));
-  -webkit-backdrop-filter: blur(var(--glass-blur-heavy));
+  /* 背景交给 AudioVisualizer：自身保持透明，频谱条成为真正的背景 */
+  background: transparent;
+  /* 移除 backdrop-filter：避免和可视化叠加产生摩尔纹 */
   z-index: var(--z-toast);
   display: flex;
   align-items: stretch;
   justify-content: center;
-  overflow-y: auto;
+  overflow: hidden;
   opacity: 0;
   transition: opacity 0.3s ease-out;
   will-change: opacity;
@@ -1737,14 +1737,29 @@ button:active:not(:disabled):not(.no-press),
   opacity: 1;
 }
 
+/* 当音频可视化关闭时，可视化组件本身不渲染，
+   必须在 .player-page 上挂一份 fallback 背景，否则会"穿帮"看到后面的内容。
+   颜色与 AudioVisualizer 的暗色/浅色背景完全对齐，保持视觉一致 */
+.player-page.no-visualizer {
+  background: linear-gradient(180deg, #0a0a14 0%, #14102a 100%);
+}
+[data-theme="light"] .player-page.no-visualizer {
+  background: linear-gradient(180deg, #FAFAFC 0%, #F0E8F4 100%);
+}
+
+/* ::before：深色模式顶部/底部暗角，给文字柔和背板；浅色模式完全不遮挡（白底上不需要） */
 .player-page::before {
   content: '';
   position: absolute;
   inset: 0;
-  background: 
-    radial-gradient(circle at 50% 50%, var(--accent-glow-subtle) 0%, transparent 60%);
+  background:
+    linear-gradient(180deg, rgba(0,0,0,0.35) 0%, transparent 25%, transparent 75%, rgba(0,0,0,0.35) 100%);
   pointer-events: none;
-  opacity: 0.5;
+  z-index: 0;
+}
+
+:root[data-theme="light"] .player-page::before {
+  background: transparent;
 }
 
 .player-page-content {
@@ -1758,6 +1773,25 @@ button:active:not(:disabled):not(.no-press),
   max-height: 100vh;
   padding: 80px 48px 48px;
   box-sizing: border-box;
+  /* 浮在 AudioVisualizer 之上 */
+  z-index: 2;
+}
+
+/* 暗角：让频谱条不抢阅读。
+   浅色模式只用极淡遮罩（频谱条已很轻 + 文字有自然对比，不再需要重压） */
+.player-page-content::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 80% 70% at 50% 50%, rgba(0,0,0,0.18) 0%, transparent 75%);
+  pointer-events: none;
+  z-index: -1;
+}
+
+/* 浅色主题：完全去掉径向暗角，避免压灰歌词和标题 */
+:root[data-theme="light"] .player-page-content::before {
+  background: transparent;
 }
 
 .player-page-layout {
@@ -1868,6 +1902,24 @@ button:active:not(:disabled):not(.no-press),
 }
 
 /* 专辑封面 */
+.album-art-zone {
+  position: relative;
+  width: 380px;
+  height: 380px;
+  margin-bottom: var(--spacing-xl);
+  /* 默认 overflow: visible，AlbumRipple 会向外扩散 200px */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 在 .album-art-zone 内重置 .album-art 的外边距，确保浮在 AlbumRipple 之上 */
+.album-art-zone .album-art {
+  margin-bottom: 0;
+  position: relative;
+  z-index: 1;
+}
+
 .album-art {
   width: 380px;
   height: 380px;
@@ -1968,6 +2020,7 @@ button:active:not(:disabled):not(.no-press),
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
+  /* 频谱条只占底部 18%，标题在中部不需要 drop-shadow */
 }
 
 .track-info h3 {
@@ -2969,6 +3022,74 @@ button:active:not(:disabled):not(.no-press),
   transform: scale(1.08);
 }
 
+/* 单首删除按钮：默认与下载按钮同色，hover 显红色 */
+.track-action-btn--delete:hover {
+  background: rgba(220, 53, 69, 0.12);
+  color: #dc3545;
+  border-color: rgba(220, 53, 69, 0.35);
+}
+
+/* 歌曲行级复选框（批量模式时显示在 col-actions 区） */
+.track-row-checkbox {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid var(--border-color, var(--border-glow));
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  transition: all var(--transition-fast);
+  cursor: pointer;
+  margin: 0 auto;
+}
+
+.track-row-checkbox.checked {
+  background: var(--primary-color);
+  border-color: var(--primary-color);
+  box-shadow: 0 0 12px var(--accent-glow);
+}
+
+.track-row-checkbox:hover {
+  border-color: var(--primary-color);
+  transform: scale(1.08);
+}
+
+/* 歌曲批量选择模式：行高亮 */
+.track-row.is-track-batch {
+  cursor: pointer;
+}
+
+.track-row.is-track-selected {
+  background: var(--accent-glow-subtle);
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 1px var(--primary-color), 0 0 16px var(--accent-glow);
+}
+
+.track-row.is-track-selected .track-index {
+  color: var(--primary-color);
+  font-weight: 700;
+}
+
+/* 批量模式时强制显示复选框（不再依赖 hover） */
+.track-row.is-track-batch .track-row-checkbox {
+  opacity: 1;
+}
+
+/* 批量模式提示标签（在 playlist-actions 工具栏里） */
+.batch-mode-hint {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--accent-glow-subtle);
+  color: var(--primary-color);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  border: 1px solid var(--border-glow);
+}
+
 .col-duration {
   font-size: var(--text-xs);
   color: var(--text-muted);
@@ -3334,12 +3455,22 @@ button:active:not(:disabled):not(.no-press),
 
 /* ==================== 播放模式图标样式 ==================== */
 .mode-icon {
-  font-size: 20px;
-  line-height: 1;
+  /* 用 inline SVG 替代 emoji，这里只需要保证 SVG 居中显示 */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
 }
 
-.big-control-buttons .mode-icon {
-  font-size: 24px;
+.mode-icon svg {
+  display: block;
+  width: 20px;
+  height: 20px;
+}
+
+.big-control-buttons .mode-icon svg {
+  width: 24px;
+  height: 24px;
 }
 
 /* ==================== 缓冲进度条样式 ==================== */
@@ -4810,6 +4941,331 @@ input:checked + .slider:before {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text-secondary);
+}
+
+/* 激进度滑块 */
+.setting-label-with-hint {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.setting-hint {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  font-weight: var(--font-weight-normal);
+}
+.slider-value {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 200px;
+}
+.intensity-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 160px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg-surface);
+  outline: none;
+  cursor: pointer;
+  transition: opacity var(--transition-fast);
+}
+.intensity-slider:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.intensity-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--primary-color, #FF69B4);
+  cursor: pointer;
+  box-shadow: 0 2px 6px var(--accent-glow);
+  transition: transform var(--transition-fast);
+}
+.intensity-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.15);
+}
+.intensity-slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--primary-color, #FF69B4);
+  cursor: pointer;
+  border: none;
+  box-shadow: 0 2px 6px var(--accent-glow);
+}
+.intensity-percent {
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  min-width: 36px;
+  text-align: right;
+}
+.setting-item.is-disabled .setting-label-with-hint label,
+.setting-item.is-disabled .setting-hint,
+.setting-item.is-disabled .intensity-percent {
+  opacity: 0.4;
+}
+
+/* 激进度草稿：应用 / 撤销按钮 */
+.btn-apply,
+.btn-reset {
+  font-family: inherit;
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-medium);
+  padding: 4px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  white-space: nowrap;
+  min-width: 44px;
+  line-height: 1.4;
+}
+
+.btn-apply {
+  background: var(--glass-bg);
+  color: var(--text-secondary);
+  border-color: var(--glass-border);
+}
+.btn-apply:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--primary-color, #FF69B4);
+}
+.btn-apply.is-active {
+  background: var(--primary-gradient, var(--primary-color, #FF69B4));
+  color: #fff;
+  border-color: transparent;
+  box-shadow: 0 2px 8px var(--accent-glow);
+  animation: apply-pulse 1.6s ease-in-out infinite;
+}
+.btn-apply.is-active:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px var(--accent-glow);
+}
+.btn-apply:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn-reset {
+  background: transparent;
+  color: var(--text-secondary);
+  border-color: var(--glass-border);
+}
+.btn-reset:hover {
+  color: var(--text-primary);
+  background: var(--glass-bg);
+}
+
+@keyframes apply-pulse {
+  0%, 100% { box-shadow: 0 2px 8px var(--accent-glow); }
+  50% { box-shadow: 0 2px 14px var(--accent-glow-strong, var(--accent-glow)); }
+}
+
+/* ============================================================ */
+/* 音频均衡器（10 段图式 EQ，垂直滑块）                          */
+/* ============================================================ */
+
+.eq-body {
+  margin-top: var(--spacing-md);
+  padding: var(--spacing-md);
+  border-radius: var(--radius-md);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  transition: opacity var(--transition-fast);
+}
+.eq-body.is-disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+.eq-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--spacing-md);
+  margin-bottom: var(--spacing-md);
+}
+.eq-preset-select {
+  min-width: 140px;
+}
+
+.eq-bands {
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 4px 0;
+}
+
+.eq-band {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.eq-db {
+  font-size: 11px;
+  font-weight: var(--font-weight-medium);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  min-height: 14px;
+  line-height: 14px;
+  transition: color var(--transition-fast);
+}
+.eq-db.is-pos { color: var(--primary-color, #FF69B4); }
+.eq-db.is-neg { color: #5fb3d4; }
+
+.eq-slider-wrap {
+  position: relative;
+  width: 28px;
+  height: 140px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 0dB 水平参考线：使用横向 + 居中定位 */
+.eq-track-zero {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+  background: var(--text-secondary);
+  opacity: 0.25;
+  pointer-events: none;
+}
+
+.eq-freq {
+  font-size: 10px;
+  color: var(--text-secondary);
+  font-weight: var(--font-weight-medium);
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+}
+
+/* 垂直 range 滑块：使用 writing-mode 把水平 range 旋成垂直 */
+.eq-slider {
+  -webkit-appearance: slider-vertical;
+  appearance: slider-vertical;
+  writing-mode: vertical-lr;
+  direction: rtl;
+  width: 24px;
+  height: 140px;
+  background: transparent;
+  cursor: pointer;
+  margin: 0;
+  padding: 0;
+  outline: none;
+}
+.eq-slider:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* WebKit 轨道：左侧渐变指示增益方向（>+6dB 暖色，<-6dB 冷色） */
+.eq-slider::-webkit-slider-runnable-track {
+  width: 4px;
+  border-radius: 2px;
+  background: linear-gradient(
+    to top,
+    #5fb3d4 0%,
+    #5fb3d4 25%,
+    var(--primary-color, #FF69B4) 75%,
+    var(--primary-color, #FF69B4) 100%
+  );
+  opacity: 0.45;
+  transition: opacity var(--transition-fast);
+}
+.eq-slider:hover::-webkit-slider-runnable-track,
+.eq-slider:focus::-webkit-slider-runnable-track {
+  opacity: 0.85;
+}
+.eq-slider[data-pos="pos"]::-webkit-slider-runnable-track {
+  background: var(--primary-color, #FF69B4);
+  opacity: 0.7;
+}
+.eq-slider[data-pos="neg"]::-webkit-slider-runnable-track {
+  background: #5fb3d4;
+  opacity: 0.7;
+}
+.eq-slider[data-pos="zero"]::-webkit-slider-runnable-track {
+  background: var(--text-secondary);
+  opacity: 0.35;
+}
+
+.eq-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 10px;
+  border-radius: 2px;
+  background: var(--bg-base, #fff);
+  border: 1.5px solid var(--primary-color, #FF69B4);
+  cursor: grab;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+  transition: transform var(--transition-fast), background var(--transition-fast);
+}
+.eq-slider:hover::-webkit-slider-thumb { transform: scaleX(1.15); }
+.eq-slider:active::-webkit-slider-thumb { cursor: grabbing; background: var(--primary-color, #FF69B4); }
+
+.eq-slider[data-pos="pos"]::-webkit-slider-thumb { border-color: var(--primary-color, #FF69B4); }
+.eq-slider[data-pos="neg"]::-webkit-slider-thumb { border-color: #5fb3d4; }
+
+/* Firefox 垂直滑块 */
+.eq-slider::-moz-range-track {
+  width: 4px;
+  border-radius: 2px;
+  background: linear-gradient(
+    to top,
+    #5fb3d4 0%,
+    #5fb3d4 25%,
+    var(--primary-color, #FF69B4) 75%,
+    var(--primary-color, #FF69B4) 100%
+  );
+  opacity: 0.45;
+}
+.eq-slider[data-pos="pos"]::-moz-range-track {
+  background: var(--primary-color, #FF69B4);
+  opacity: 0.7;
+}
+.eq-slider[data-pos="neg"]::-moz-range-track {
+  background: #5fb3d4;
+  opacity: 0.7;
+}
+.eq-slider[data-pos="zero"]::-moz-range-track {
+  background: var(--text-secondary);
+  opacity: 0.35;
+}
+.eq-slider::-moz-range-thumb {
+  width: 18px;
+  height: 10px;
+  border-radius: 2px;
+  background: var(--bg-base, #fff);
+  border: 1.5px solid var(--primary-color, #FF69B4);
+  cursor: grab;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+  transition: transform var(--transition-fast);
+}
+.eq-slider:hover::-moz-range-thumb { transform: scaleX(1.15); }
+.eq-slider[data-pos="pos"]::-moz-range-thumb { border-color: var(--primary-color, #FF69B4); }
+.eq-slider[data-pos="neg"]::-moz-range-thumb { border-color: #5fb3d4; }
+
+/* 暗色模式调整滑块 thumb 背景，避免与深色背景融合 */
+[data-theme="dark"] .eq-slider::-webkit-slider-thumb {
+  background: #2a2a2a;
+}
+[data-theme="dark"] .eq-slider::-moz-range-thumb {
+  background: #2a2a2a;
 }
 
 /* 通用按钮 */

@@ -2,10 +2,13 @@
 import { ref, onMounted, onUnmounted, computed, watch, nextTick } from 'vue'
 import { parseDuration, formatPlayCount, fixCoverUrl } from './utils/bilibili.js'
 import { selectAudioUrl, selectAudioInfo } from './utils/audio.js'
+import { attachAudioAnalyser } from './utils/audioAnalyser'
 import WindowControls from './components/WindowControls.vue'
 import AppDock from './components/AppDock.vue'
 import MineView from './components/MineView.vue'
 import LyricDisplay from './components/player/LyricDisplay.vue'
+import AudioVisualizer from './components/AudioVisualizer.vue'
+import AlbumRipple from './components/AlbumRipple.vue'
 import { useLyricStore, usePlayerStore, useSettingsStore, useDownloadStore, useUserStore, usePlaylistStore } from './stores'
 import DownloadManager from './components/DownloadManager.vue'
 import LoginPanel from './components/LoginPanel.vue'
@@ -124,6 +127,10 @@ const currentEpisodeIndex = ref(0)
 const albumArtRef = ref(null)
 const showLyricPanel = ref(true)
 
+// 批量管理歌单内歌曲：多选模式 + 已选 key 集合（key 同模板 :key）
+const isTrackBatchMode = ref(false)
+const selectedTrackKeys = ref(new Set())
+
 // 设置功能状态 - 已迁移到 MineView，不再需要
 const showLoginPanel = ref(false)
 
@@ -139,11 +146,33 @@ function closePlayerPage() {
 }
 
 const playMode = ref('order')
+// 播放模式图标：用内联 SVG 替代 emoji。
+// 顺序播放：双向水平箭头（左右反向）
+// 列表循环：环形箭头（refresh）
+// 随机播放：交叉箭头（shuffle）
+// 单曲循环：左侧小圆点 + 右侧三条横线（repeat one 风格）
 const playModes = [
-  { value: 'order', icon: '🔁', label: '顺序播放' },
-  { value: 'loop', icon: '🔃', label: '列表循环' },
-  { value: 'single', icon: '🔂', label: '单曲循环' },
-  { value: 'shuffle', icon: '🔀', label: '随机播放' }
+  {
+    value: 'order',
+    label: '顺序播放',
+    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="20" height="20"><polyline points="17 1 21 5 17 9"/><path d="M3 5h18"/><polyline points="7 23 3 19 7 15"/><path d="M21 19H3"/></svg>'
+  },
+  {
+    value: 'loop',
+    label: '列表循环',
+    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="20" height="20"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>'
+  },
+  {
+    value: 'shuffle',
+    label: '随机播放',
+    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="20" height="20"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>'
+  },
+  {
+    value: 'single',
+    label: '单曲循环',
+    // 循环箭头中央放一个 "1"，表示"循环 1 次（单曲）"
+    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="20" height="20"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/><text x="12" y="15.5" text-anchor="middle" dominant-baseline="middle" fill="currentColor" stroke="none" font-size="8" font-weight="700" font-family="Arial, sans-serif">1</text></svg>'
+  }
 ]
 
 const colorOptions = [
@@ -169,6 +198,7 @@ function setColor(color) {
   currentColor.value = color
   localStorage.setItem('pink-music-color', color)
   document.documentElement.setAttribute('data-color', color)
+  showThemePanel.value = false
 }
 
 function goToHome() {
@@ -296,17 +326,47 @@ function togglePlaylistSelection(playlist) {
   selectedPlaylistIds.value = next
 }
 
-function selectAllDeletablePlaylists() {
-  const next = new Set()
-  for (const p of playlistStore.userPlaylists) {
-    if (!p.isDefault) next.add(p.id)
+// 取得所有"可被批量选中的"歌单 id（默认收藏夹不算）
+function getDeletablePlaylistIds() {
+  return playlistStore.userPlaylists
+    .filter(p => !p.isDefault)
+    .map(p => p.id)
+}
+
+// 是否已经处于"全部可删除歌单都选中"的状态——用于决定全选按钮的图标 / 文案
+const isAllDeletablePlaylistsSelected = computed(() => {
+  const ids = getDeletablePlaylistIds()
+  if (ids.length === 0) return false
+  return ids.every(id => selectedPlaylistIds.value.has(id))
+})
+
+// "全选"按钮的真正逻辑：已全选 → 取消全选；否则全选可删除的歌单
+// 这样用户不用退出批量模式就能反向操作
+function toggleSelectAllPlaylists() {
+  if (isAllDeletablePlaylistsSelected.value) {
+    selectedPlaylistIds.value = new Set()
+  } else {
+    selectedPlaylistIds.value = new Set(getDeletablePlaylistIds())
   }
-  selectedPlaylistIds.value = next
 }
 
 function isPlaylistSelected(playlist) {
   return !!playlist && selectedPlaylistIds.value.has(playlist.id)
 }
+
+// 当 store 里的歌单列表变化（单删、外部同步等）时，把已选集合中已不存在的 id 清掉，
+// 防止"已选 N 个"和实际可操作数对不上
+watch(
+  () => playlistStore.userPlaylists.map(p => p.id),
+  (currentIds) => {
+    if (selectedPlaylistIds.value.size === 0) return
+    const idSet = new Set(currentIds)
+    const filtered = Array.from(selectedPlaylistIds.value).filter(id => idSet.has(id))
+    if (filtered.length !== selectedPlaylistIds.value.size) {
+      selectedPlaylistIds.value = new Set(filtered)
+    }
+  }
+)
 
 async function confirmBatchDeletePlaylists() {
   console.log('[BatchDelete] called, selected size =', selectedPlaylistIds.value.size)
@@ -391,6 +451,165 @@ function loadFavResourcesFor(playlist) {
   playlistStore.setCurrentView('playlist')
   loadFavResources()
 }
+
+// ============= 歌单内歌曲：单首删除 / 批量删除 =============
+
+/**
+ * 与模板里的 :key 保持一致：bvid:favId:favType。
+ * **永远在末尾追加 index** 作为唯一性兜底——这是修复 BUG 的关键：
+ * 当多条音乐恰好有相同的 bvid + favId + favType（例如同 bvid 重复条目、
+ * 收藏夹内多 P 但 id 缺失等情况），如果只用前三个字段拼 key，所有歌会
+ * 生成同一个 key，导致：
+ *   1. 点击一首时，集合里只有 1 个 key，但所有歌的 key 都命中 → 视觉"全选"
+ *   2. 点"全选"时，set 已有该 key，set 大小仍为 1 → 计数器显示 1/n
+ * 把 index 拼到 key 末尾能确保每个位置都有独立 key，彻底规避这种碰撞。
+ */
+function getTrackKey(music, index) {
+  if (!music) return ''
+  return (music.bvid || '') + ':' + (music.favId ?? index) + ':' + (music.favType ?? '') + ':' + index
+}
+
+function enterTrackBatchMode() {
+  isTrackBatchMode.value = true
+}
+
+function exitTrackBatchMode() {
+  isTrackBatchMode.value = false
+  selectedTrackKeys.value = new Set()
+}
+
+function toggleTrackSelection(music, index) {
+  if (!music) return
+  const key = getTrackKey(music, index)
+  if (!key) return
+  const next = new Set(selectedTrackKeys.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  selectedTrackKeys.value = next
+}
+
+function isTrackSelected(music, index) {
+  if (!music) return false
+  return selectedTrackKeys.value.has(getTrackKey(music, index))
+}
+
+function selectAllTracks() {
+  const list = currentPlaylist.value?.music || []
+  const next = new Set()
+  list.forEach((m, i) => {
+    const k = getTrackKey(m, i)
+    if (k) next.add(k)
+  })
+  selectedTrackKeys.value = next
+}
+
+function isAllTracksSelected() {
+  const list = currentPlaylist.value?.music || []
+  if (list.length === 0) return false
+  return list.every((m, i) => selectedTrackKeys.value.has(getTrackKey(m, i)))
+}
+
+/**
+ * 单首删除：从当前歌单里删除一首歌。
+ * - B 站收藏夹：只删本地副本，云端不受影响
+ * - 默认收藏夹（"收藏夹"）：允许删除单首
+ */
+async function confirmDeleteTrack(music) {
+  if (!music || !currentPlaylist.value) return
+  const pl = currentPlaylist.value
+  const ok = await appConfirm({
+    title: '删除歌曲',
+    message: `确定要从歌单「${pl.name}」中删除「${music.title || '该歌曲'}」吗？`,
+    detail: pl.isBiliFavorite
+      ? '仅删除本地副本，不会影响 B 站云端。'
+      : '此操作不可恢复。',
+    confirmText: '删除',
+    cancelText: '取消'
+  })
+  if (!ok) return
+  const list = pl.music || []
+  const idx = list.findIndex(m =>
+    (m.bvid || '') === (music.bvid || '') &&
+    (m.favId ?? null) === (music.favId ?? null) &&
+    (m.favType ?? null) === (music.favType ?? null)
+  )
+  if (idx < 0) return
+  list.splice(idx, 1)
+  const pIdx = playlistStore.userPlaylists.findIndex(p => p.id === pl.id)
+  if (pIdx >= 0) {
+    playlistStore.userPlaylists[pIdx] = {
+      ...playlistStore.userPlaylists[pIdx],
+      music: [...list]
+    }
+    playlistStore.savePlaylists()
+    // 刷新 currentPlaylist 引用，触发视图更新
+    playlistStore.setCurrentPlaylist(playlistStore.userPlaylists[pIdx])
+  }
+}
+
+/**
+ * 批量删除歌曲：
+ * - 逻辑直接在 UI 组件里执行，避开 Pinia store action HMR 不热更的坑
+ * - 删除前弹窗确认，B 站收藏夹附文案说明
+ * - 删除后自动退出批量模式
+ */
+async function confirmBatchDeleteTracks() {
+  console.log('[BatchDeleteTrack] called, selected size =', selectedTrackKeys.value.size)
+  if (selectedTrackKeys.value.size === 0) return
+  const pl = currentPlaylist.value
+  if (!pl || !pl.music || pl.music.length === 0) return
+  const keys = new Set(selectedTrackKeys.value)
+  const matched = pl.music.filter((m, i) => keys.has(getTrackKey(m, i)))
+  console.log('[BatchDeleteTrack] matched =', matched.length)
+  if (matched.length === 0) {
+    await appConfirm({
+      title: '无匹配歌曲',
+      message: '所选歌曲均已不在歌单中',
+      detail: '歌曲可能已被其他操作删除',
+      confirmText: '我知道了',
+      cancelText: '关闭'
+    })
+    exitTrackBatchMode()
+    return
+  }
+  const detail = pl.isBiliFavorite
+    ? `共 ${matched.length} 首音乐将被删除。\n（仅删除本地副本，不会影响 B 站云端）`
+    : `共 ${matched.length} 首音乐将被删除，此操作不可恢复。`
+  const ok = await appConfirm({
+    title: '批量删除歌曲',
+    message: `确定要从歌单「${pl.name}」中删除已选中的 ${matched.length} 首歌曲吗？`,
+    detail,
+    confirmText: '批量删除',
+    cancelText: '取消'
+  })
+  if (!ok) return
+  try {
+    const newList = pl.music.filter((m, i) => !keys.has(getTrackKey(m, i)))
+    const deletedCount = pl.music.length - newList.length
+    const pIdx = playlistStore.userPlaylists.findIndex(p => p.id === pl.id)
+    if (pIdx >= 0) {
+      playlistStore.userPlaylists[pIdx] = {
+        ...playlistStore.userPlaylists[pIdx],
+        music: newList
+      }
+      playlistStore.savePlaylists()
+      // 刷新 currentPlaylist 引用
+      playlistStore.setCurrentPlaylist(playlistStore.userPlaylists[pIdx])
+    }
+    console.log(`[BatchDeleteTrack] ✅ 删除 ${deletedCount} 首，剩余 ${newList.length} 首`)
+    exitTrackBatchMode()
+  } catch (err) {
+    console.error('[BatchDeleteTrack] ❌', err)
+    alert('批量删除失败：' + (err?.message || err))
+  }
+}
+
+// 切歌单时自动清理批量模式
+watch(currentPlaylist, () => {
+  if (isTrackBatchMode.value) {
+    exitTrackBatchMode()
+  }
+})
 
 async function loadRecommendedMusic() {
   isLoadingRecommended.value = true
@@ -580,6 +799,15 @@ async function playMusic(music) {
 
   audioElement.value = new Audio()
   audioElement.value.crossOrigin = 'anonymous'
+
+  // 接入 Web Audio Analyser，用于大屏播放页频谱可视化。
+  // 每次 playMusic 都会创建新 Audio 元素，所以必须重新 attach。
+  // 失败不影响正常播放。
+  try {
+    attachAudioAnalyser(audioElement.value)
+  } catch (err) {
+    console.warn('[AudioVisualizer] analyser 初始化失败:', err)
+  }
 
   let audioSrc = null
 
@@ -1481,12 +1709,14 @@ onUnmounted(() => {
               <!-- 批量模式下的工具栏 -->
               <template v-if="isBatchMode">
                 <button
-                  @click="selectAllDeletablePlaylists"
+                  v-if="getDeletablePlaylistIds().length > 0"
+                  @click="toggleSelectAllPlaylists"
                   class="playlist-action-btn"
-                  title="选中所有可删除的歌单（默认收藏夹除外）"
+                  :title="isAllDeletablePlaylistsSelected ? '取消全选' : '选中所有可删除的歌单（默认收藏夹除外）'"
                 >
-                  <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z"/></svg>
-                  <span>全选</span>
+                  <svg v-if="isAllDeletablePlaylistsSelected" viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+                  <svg v-else viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z"/></svg>
+                  <span>{{ isAllDeletablePlaylistsSelected ? '取消全选' : '全选' }}</span>
                 </button>
                 <button
                   @click="exitBatchMode"
@@ -1604,7 +1834,8 @@ onUnmounted(() => {
                 <h4 class="playlist-card-name">{{ playlist.name }}</h4>
                 <p class="playlist-card-count">{{ playlist.music?.length || playlist.media_count || 0 }} 首</p>
               </div>
-              <div class="playlist-card-toolbar">
+              <!-- 批量模式下隐藏工具栏：里面的单条删除/导出/加载按钮与批量管理语义冲突，会让用户误以为点了能影响"已选"集合 -->
+              <div v-if="!isBatchMode" class="playlist-card-toolbar">
                 <button
                   v-if="!playlist.isDefault"
                   class="card-tool-btn"
@@ -1667,47 +1898,86 @@ onUnmounted(() => {
               <span v-if="currentPlaylist?.isBiliFavorite" class="playlist-tag">B 站收藏夹</span>
             </div>
             <div class="playlist-actions" v-if="!currentPlaylist?.id || currentPlaylist?.music">
-              <button
-                v-if="currentPlaylist?.music && currentPlaylist.music.length > 0"
-                @click="playPlaylistAll(currentPlaylist)"
-                class="playlist-action-btn primary"
-                title="一键播放整个歌单"
-              >
-                <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M8 5v14l11-7z"/></svg>
-                <span>播放</span>
-              </button>
-              <button @click="exportPlaylist(currentPlaylist)" class="playlist-action-btn" title="导出歌单">
-                <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
-                <span>导出</span>
-              </button>
-              <button
-                v-if="currentPlaylist?.isBiliFavorite"
-                @click="loadFavResources"
-                class="playlist-action-btn"
-                :disabled="isLoadingFavResources"
-                title="加载收藏夹内的视频"
-              >
-                <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M19 8l-4 4h3c0 3.31-2.69 6-6 6-1.01 0-1.97-.25-2.8-.7l-1.46 1.46C8.97 19.54 10.43 20 12 20c4.42 0 8-3.58 8-8h3l-4-4zM6 12c0-3.31 2.69-6 6-6 1.01 0 1.97.25 2.8.7l1.46-1.46C15.03 4.46 13.57 4 12 4c-4.42 0-8 3.58-8 8H1l4 4 4-4H6z"/></svg>
-                <span v-if="isLoadingFavResources">
-                  {{ favSyncProgress.stage === 'ids' ? '正在拉取清单' : `加载中 ${favSyncProgress.loaded}/${currentPlaylist?.media_count || favSyncProgress.loaded}` }}
+              <!-- 批量管理模式工具栏 -->
+              <template v-if="isTrackBatchMode">
+                <span class="batch-mode-hint">
+                  已选 {{ selectedTrackKeys.size }} / {{ currentPlaylist?.music?.length || 0 }} 首
                 </span>
-                <span v-else>加载视频</span>
-              </button>
-              <button
-                v-if="!currentPlaylist?.isDefault"
-                @click="confirmDeletePlaylist(currentPlaylist)"
-                class="playlist-action-btn danger"
-                title="删除歌单（仅本地）"
-              >
-                <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1-1H5v2h14V4z"/></svg>
-                <span>删除</span>
-              </button>
+                <button
+                  @click="isAllTracksSelected() ? (selectedTrackKeys = new Set()) : selectAllTracks()"
+                  class="playlist-action-btn"
+                  :title="isAllTracksSelected() ? '取消全选' : '全选所有歌曲'"
+                >
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z"/></svg>
+                  <span>{{ isAllTracksSelected() ? '取消全选' : '全选' }}</span>
+                </button>
+                <button @click="exitTrackBatchMode" class="playlist-action-btn" title="退出批量模式">
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+                  <span>取消</span>
+                </button>
+                <button
+                  @click="confirmBatchDeleteTracks"
+                  class="playlist-action-btn danger"
+                  :disabled="selectedTrackKeys.size === 0"
+                  :title="selectedTrackKeys.size === 0 ? '请先选择要删除的歌曲' : '批量删除所选歌曲'"
+                >
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1-1H5v2h14V4z"/></svg>
+                  <span>批量删除{{ selectedTrackKeys.size > 0 ? ` (${selectedTrackKeys.size})` : '' }}</span>
+                </button>
+              </template>
+              <!-- 正常模式工具栏 -->
+              <template v-else>
+                <button
+                  v-if="currentPlaylist?.music && currentPlaylist.music.length > 0"
+                  @click="playPlaylistAll(currentPlaylist)"
+                  class="playlist-action-btn primary"
+                  title="一键播放整个歌单"
+                >
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M8 5v14l11-7z"/></svg>
+                  <span>播放</span>
+                </button>
+                <button @click="exportPlaylist(currentPlaylist)" class="playlist-action-btn" title="导出歌单">
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+                  <span>导出</span>
+                </button>
+                <button
+                  v-if="currentPlaylist?.isBiliFavorite"
+                  @click="loadFavResources"
+                  class="playlist-action-btn"
+                  :disabled="isLoadingFavResources"
+                  title="加载收藏夹内的视频"
+                >
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M19 8l-4 4h3c0 3.31-2.69 6-6 6-1.01 0-1.97-.25-2.8-.7l-1.46 1.46C8.97 19.54 10.43 20 12 20c4.42 0 8-3.58 8-8h3l-4-4zM6 12c0-3.31 2.69-6 6-6 1.01 0 1.97.25 2.8.7l1.46-1.46C15.03 4.46 13.57 4 12 4c-4.42 0-8 3.58-8 8H1l4 4 4-4H6z"/></svg>
+                  <span v-if="isLoadingFavResources">
+                    {{ favSyncProgress.stage === 'ids' ? '正在拉取清单' : `加载中 ${favSyncProgress.loaded}/${currentPlaylist?.media_count || favSyncProgress.loaded}` }}
+                  </span>
+                  <span v-else>加载视频</span>
+                </button>
+                <button
+                  v-if="currentPlaylist?.music && currentPlaylist.music.length > 0"
+                  @click="enterTrackBatchMode"
+                  class="playlist-action-btn"
+                  title="批量管理歌曲"
+                >
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M3 5h2v2H3V5zm4 0h14v2H7V5zM3 11h2v2H3v-2zm4 0h14v2H7v-2zM3 17h2v2H3v-2zm4 0h14v2H7v-2z"/></svg>
+                  <span>批量管理</span>
+                </button>
+                <button
+                  v-if="!currentPlaylist?.isDefault"
+                  @click="confirmDeletePlaylist(currentPlaylist)"
+                  class="playlist-action-btn danger"
+                  title="删除歌单（仅本地）"
+                >
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1-1H5v2h14V4z"/></svg>
+                  <span>删除</span>
+                </button>
+              </template>
             </div>
           </div>
         </div>
 
         <div class="track-list" v-if="currentPlaylist?.music && currentPlaylist.music.length > 0">
-          <div class="track-list-header">
+          <div class="track-list-header" :class="{ 'is-batch-mode': isTrackBatchMode }">
             <span class="col-index">#</span>
             <span class="col-title">标题</span>
             <span class="col-actions"></span>
@@ -1715,10 +1985,14 @@ onUnmounted(() => {
           </div>
           <div
             v-for="(music, index) in currentPlaylist?.music"
-            :key="(music.bvid || '') + ':' + (music.favId ?? index) + ':' + (music.favType ?? '')"
+            :key="getTrackKey(music, index)"
             class="track-row"
+            :class="{
+              'is-track-batch': isTrackBatchMode,
+              'is-track-selected': isTrackBatchMode && isTrackSelected(music, index)
+            }"
             :style="{ '--track-index': index }"
-            @click="playMusic(music)"
+            @click="isTrackBatchMode ? toggleTrackSelection(music, index) : playMusic(music)"
           >
             <div class="col-index">
               <span class="track-index">{{ index + 1 }}</span>
@@ -1739,9 +2013,30 @@ onUnmounted(() => {
               </div>
             </div>
             <div class="col-actions">
-              <button class="track-action-btn" @click.stop="downloadMusic(music)" title="下载">
+              <button
+                v-if="!isTrackBatchMode"
+                class="track-action-btn"
+                @click.stop="downloadMusic(music)"
+                title="下载"
+              >
                 <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
               </button>
+              <button
+                v-if="!isTrackBatchMode"
+                class="track-action-btn track-action-btn--delete"
+                @click.stop="confirmDeleteTrack(music)"
+                title="从歌单中删除"
+              >
+                <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1-1H5v2h14V4z"/></svg>
+              </button>
+              <span
+                v-if="isTrackBatchMode"
+                class="track-row-checkbox"
+                :class="{ checked: isTrackSelected(music, index) }"
+                @click.stop="toggleTrackSelection(music, index)"
+              >
+                <svg v-if="isTrackSelected(music, index)" viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z"/></svg>
+              </span>
             </div>
             <div class="col-duration">{{ parseDuration(music.duration) }}</div>
           </div>
@@ -1794,7 +2089,7 @@ onUnmounted(() => {
       <div class="player-controls">
         <div class="control-buttons">
           <button @click="togglePlayMode" class="control-btn mode-btn" :class="{ active: playMode !== 'order' }" :title="getPlayModeLabel()">
-            <span class="mode-icon">{{ getPlayModeIcon() }}</span>
+            <span class="mode-icon" v-html="getPlayModeIcon()"></span>
           </button>
           <button @click="playPrevious" class="control-btn">
             <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
@@ -1874,12 +2169,23 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <div v-if="showPlayerPage && currentTrack" class="player-page" :class="{ active: showPlayerPage }" @click="closePlayerPage">
+    <div
+      v-if="showPlayerPage && currentTrack"
+      class="player-page"
+      :class="{ active: showPlayerPage, 'no-visualizer': !settingsStore.audioVisualizerEnabled }"
+      @click="closePlayerPage"
+    >
       <!-- 左上角：返回 -->
       <button class="back-btn" @click.stop="closePlayerPage">
         <svg viewBox="0 0 24 24" fill="currentColor" width="24" height="24"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
         <span>返回</span>
       </button>
+
+      <!-- 音频频谱可视化：开关关闭时不渲染，避免空 canvas 占位 -->
+      <AudioVisualizer
+        v-if="settingsStore.audioVisualizerEnabled"
+        :enabled="settingsStore.audioVisualizerEnabled"
+      />
 
       <div class="player-page-content" @click.stop>
         <button v-if="currentSeries" class="series-toggle-btn" @click="toggleSeriesPanel">
@@ -1893,8 +2199,15 @@ onUnmounted(() => {
         >
           <!-- 左侧：封面 + 标题 + 进度 + 控制 -->
           <div class="player-page-left">
-            <div ref="albumArtRef" class="album-art">
-              <img :src="fixCoverUrl(currentTrack.cover)" :alt="currentTrack.title" @error="$event.target.src='https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=400'">
+            <div class="album-art-zone">
+              <div ref="albumArtRef" class="album-art">
+                <img :src="fixCoverUrl(currentTrack.cover)" :alt="currentTrack.title" @error="$event.target.src='https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=400'">
+              </div>
+              <!-- 音频波纹：随低音能量从封面中心向外扩散，开关关闭时不渲染 -->
+              <AlbumRipple
+                v-if="settingsStore.audioVisualizerEnabled"
+                :intensity="settingsStore.audioVisualizerIntensity"
+              />
             </div>
 
             <div class="track-info">
@@ -1939,7 +2252,7 @@ onUnmounted(() => {
               <div class="big-control-row">
                 <div class="big-control-side big-control-side--left">
                   <button @click="togglePlayMode" class="big-control-btn" :class="{ active: playMode !== 'order' }" :title="getPlayModeLabel()">
-                    <span class="mode-icon">{{ getPlayModeIcon() }}</span>
+                    <span class="mode-icon" v-html="getPlayModeIcon()"></span>
                   </button>
                   <button @click="playPrevious" class="big-control-btn">
                     <svg viewBox="0 0 24 24" fill="currentColor" width="24" height="24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>

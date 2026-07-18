@@ -622,6 +622,7 @@ function onGlobalKeydown(e) {
   margin: 0 auto;
   line-height: 1.4;
   user-select: none;
+  /* 频谱条现在只占底部 18%，不与歌词重叠，不再需要 text-shadow */
   transition: color 0.25s ease, font-size 0.3s ease, transform 0.3s ease;
 }
 .line:hover { color: var(--text-primary); }

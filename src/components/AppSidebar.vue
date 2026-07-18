@@ -15,6 +15,16 @@ function toggleThemePanel() {
   showThemePanel.value = !showThemePanel.value
 }
 
+function selectTheme(theme) {
+  themeStore.setTheme(theme)
+  showThemePanel.value = false
+}
+
+function selectColor(color) {
+  themeStore.setColor(color)
+  showThemePanel.value = false
+}
+
 function goToHome() {
   playlistStore.setCurrentView('home')
 }
@@ -205,7 +215,7 @@ function deletePlaylist(playlist) {
               :key="theme" 
               class="theme-btn" 
               :class="{ active: themeStore.currentTheme === theme }" 
-              @click="themeStore.setTheme(theme)"
+              @click="selectTheme(theme)"
             >
               {{ theme === 'dark' ? '深色' : '浅色' }}
             </button>
@@ -220,7 +230,7 @@ function deletePlaylist(playlist) {
               class="color-btn" 
               :class="{ active: themeStore.currentColor === color }" 
               :style="{ backgroundColor: color === 'pink' ? '#FF69B4' : color === 'purple' ? '#9C27B0' : color === 'blue' ? '#2196F3' : color === 'green' ? '#4CAF50' : '#FF9800' }" 
-              @click="themeStore.setColor(color)"
+              @click="selectColor(color)"
             />
           </div>
         </div>

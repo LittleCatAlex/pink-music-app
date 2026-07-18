@@ -1,7 +1,8 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useUserStore, usePlayerStore, usePlaylistStore, useSettingsStore } from '../stores'
 import { parseDuration } from '../utils/bilibili'
+import { EQ_BANDS, EQ_PRESET_KEYS, EQ_PRESET_LABELS, EQ_DB_MIN, EQ_DB_MAX } from '../utils/audioEQ'
 
 const userStore = useUserStore()
 const playerStore = usePlayerStore()
@@ -14,6 +15,82 @@ const isCalculatingCache = ref(false)
 const isClearingCache = ref(false)
 const downloadDirectory = ref('')
 const showClearCacheConfirm = ref(false)
+
+// 音频可视化激进度：草稿值。拖动滑块只改这里，点"应用"才提交到 store。
+// 这样在大屏播放页打开时调整激进度不会一边拖一边变（避免反复触发视觉变化）。
+const pendingIntensity = ref(settingsStore.audioVisualizerIntensity)
+// 四舍五入到 0.01 后比较，避免浮点误差导致的"没变化但按钮可用"
+const intensityDirty = computed(
+  () => Math.round(pendingIntensity.value * 100) !== Math.round(settingsStore.audioVisualizerIntensity * 100)
+)
+function applyIntensity() {
+  if (!intensityDirty.value) return
+  settingsStore.setAudioVisualizerIntensity(pendingIntensity.value)
+}
+function resetIntensity() {
+  pendingIntensity.value = settingsStore.audioVisualizerIntensity
+}
+// 如果 store 在外部被改（比如多窗口同步、设置导入），同步到草稿
+watch(
+  () => settingsStore.audioVisualizerIntensity,
+  (v) => { pendingIntensity.value = v }
+)
+
+// 均衡器：滑块采用 draft + apply 模式（与可视化激进度一致）。
+// 拖动只改 pendingBands，点击"应用"才把 10 段一次性提交到 store + 音频引擎。
+// 预置/重置是 live 动作（立即提交），但会同步把 store 值灌进 pendingBands，让滑块和实际生效值保持一致。
+const pendingBands = ref(settingsStore.eqBands.slice())
+// 浮点比较：slider step=0.5，所以严格 === 是安全的（不会因浮点误差误判 dirty）
+const eqDirty = computed(() => {
+  const a = pendingBands.value
+  const b = settingsStore.eqBands
+  if (!a || !b || a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return true
+  }
+  return false
+})
+const presetKeys = EQ_PRESET_KEYS
+const presetLabels = EQ_PRESET_LABELS
+// 滑块 + dB 数值标签都绑定 draft（pendingBands），点击"应用"才提交到 store
+
+function onBandInput(index, event) {
+  const v = parseFloat(event.target.value)
+  // 数组整体替换以保证 Vue 响应式检测到变化
+  const next = pendingBands.value.slice()
+  next[index] = v
+  pendingBands.value = next
+}
+function onPresetChange(event) {
+  const key = event.target.value
+  if (!key) return
+  // 预置是 live 动作：直接 commit 到 store + 音频，同时同步 draft
+  settingsStore.applyEQPreset(key)
+  pendingBands.value = settingsStore.eqBands.slice()
+}
+function onResetEQ() {
+  // 重置是 live 动作：commit 后同步 draft
+  settingsStore.resetEQ()
+  pendingBands.value = settingsStore.eqBands.slice()
+}
+function applyEQ() {
+  if (!eqDirty.value) return
+  settingsStore.commitEQBands(pendingBands.value)
+  // commit 后 store 和 draft 一致，无需手动同步
+}
+function revertEQ() {
+  pendingBands.value = settingsStore.eqBands.slice()
+}
+// store 被外部修改时（多窗口同步、设置导入等），把 draft 拉回 store 当前值
+watch(
+  () => settingsStore.eqBands,
+  (v) => { pendingBands.value = v.slice() }
+)
+function formatDb(v) {
+  // 显示格式：+1.5 / 0 / -3
+  if (v === 0) return '0'
+  return (v > 0 ? '+' : '') + v.toFixed(1).replace(/\.0$/, '')
+}
 
 const tabs = [
   { key: 'profile', label: '我的' },
@@ -286,6 +363,155 @@ onMounted(() => {
             <option value="low">低音质</option>
           </select>
         </div>
+        <div class="setting-item">
+          <label>大屏播放页频谱可视化</label>
+          <div class="setting-value">
+            <label
+              class="switch"
+              :title="settingsStore.audioVisualizerEnabled ? '关闭可视化' : '开启可视化'"
+            >
+              <input
+                type="checkbox"
+                :checked="settingsStore.audioVisualizerEnabled"
+                @change="settingsStore.setAudioVisualizerEnabled($event.target.checked)"
+              >
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+        <div class="setting-item" :class="{ 'is-disabled': !settingsStore.audioVisualizerEnabled }">
+          <div class="setting-label-with-hint">
+            <label>可视化激进度</label>
+            <span class="setting-hint">控制波纹模糊强度、密度、触发阈值</span>
+          </div>
+          <div class="setting-value slider-value">
+            <input
+              type="range"
+              min="0"
+              max="100"
+              step="1"
+              :disabled="!settingsStore.audioVisualizerEnabled"
+              :value="Math.round(pendingIntensity * 100)"
+              @input="pendingIntensity = $event.target.value / 100"
+              class="intensity-slider"
+            >
+            <span class="intensity-percent">{{ Math.round(pendingIntensity * 100) }}%</span>
+            <button
+              type="button"
+              class="btn-apply"
+              :class="{ 'is-active': intensityDirty }"
+              :disabled="!settingsStore.audioVisualizerEnabled || !intensityDirty"
+              :title="intensityDirty ? '应用新的激进度' : '已是当前生效值'"
+              @click="applyIntensity"
+            >
+              应用
+            </button>
+            <button
+              v-if="intensityDirty"
+              type="button"
+              class="btn-reset"
+              title="放弃更改，恢复到当前生效值"
+              @click="resetIntensity"
+            >
+              撤销
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-section glass-card">
+        <h3>音频均衡器</h3>
+        <div class="setting-item">
+          <label>启用均衡器</label>
+          <div class="setting-value">
+            <label
+              class="switch"
+              :title="settingsStore.eqEnabled ? '关闭均衡器' : '开启均衡器'"
+            >
+              <input
+                type="checkbox"
+                :checked="settingsStore.eqEnabled"
+                @change="settingsStore.setEQEnabled($event.target.checked)"
+              >
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+        <div class="eq-body" :class="{ 'is-disabled': !settingsStore.eqEnabled }">
+          <div class="eq-toolbar">
+            <div class="setting-label-with-hint">
+              <label>预置曲线</label>
+              <span class="setting-hint">快速切换常用 EQ 风格</span>
+            </div>
+            <div class="setting-value">
+              <select
+                class="quality-select eq-preset-select"
+                :disabled="!settingsStore.eqEnabled"
+                :value="settingsStore.eqPreset"
+                @change="onPresetChange"
+              >
+                <option v-for="k in presetKeys" :key="k" :value="k">
+                  {{ presetLabels[k] }}
+                </option>
+              </select>
+              <button
+                type="button"
+                class="btn-secondary"
+                :disabled="!settingsStore.eqEnabled"
+                title="重置所有频段到 0dB"
+                @click="onResetEQ"
+              >
+                重置
+              </button>
+              <button
+                type="button"
+                class="btn-apply"
+                :class="{ 'is-active': eqDirty }"
+                :disabled="!settingsStore.eqEnabled || !eqDirty"
+                :title="eqDirty ? '把滑块当前值应用到音频' : '已是当前生效值'"
+                @click="applyEQ"
+              >
+                应用
+              </button>
+              <button
+                v-if="eqDirty"
+                type="button"
+                class="btn-reset"
+                title="放弃更改，恢复到当前生效值"
+                @click="revertEQ"
+              >
+                撤销
+              </button>
+            </div>
+          </div>
+          <div class="eq-bands">
+            <div
+              v-for="(band, i) in EQ_BANDS"
+              :key="band.freq"
+              class="eq-band"
+            >
+              <span class="eq-db" :class="pendingBands[i] > 0 ? 'is-pos' : pendingBands[i] < 0 ? 'is-neg' : ''">
+                {{ formatDb(pendingBands[i]) }}
+              </span>
+              <div class="eq-slider-wrap">
+                <div class="eq-track-zero"></div>
+                <input
+                  type="range"
+                  orient="vertical"
+                  :min="EQ_DB_MIN"
+                  :max="EQ_DB_MAX"
+                  step="0.5"
+                  :disabled="!settingsStore.eqEnabled"
+                  :value="pendingBands[i]"
+                  :data-pos="pendingBands[i] > 0 ? 'pos' : pendingBands[i] < 0 ? 'neg' : 'zero'"
+                  class="eq-slider"
+                  @input="onBandInput(i, $event)"
+                >
+              </div>
+              <span class="eq-freq">{{ band.label }}<span v-if="band.label.endsWith('K')">Hz</span></span>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div class="settings-section glass-card">
@@ -322,7 +548,7 @@ onMounted(() => {
         <div class="about-content">
           <div class="about-header">
             <span class="logo-text">Pink Music</span>
-            <span class="version">v2.0.2</span>
+            <span class="version">v2.2.0</span>
           </div>
           <p class="about-desc">一款优雅的 B 站音乐播放器，让你发现并享受喜欢的音乐。</p>
           <button class="btn-secondary" @click="openGitHub">
