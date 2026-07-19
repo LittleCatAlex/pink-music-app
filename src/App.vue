@@ -1489,7 +1489,51 @@ function setupLiquidGlass() {
   }
 }
 
+// macOS 原生菜单命令处理
+let unregisterMenuCommand = null
+function handleMenuCommand(command) {
+  if (!command || !command.action) return
+  switch (command.action) {
+    case 'toggle-play-pause':
+      togglePlayPause()
+      break
+    case 'play-next':
+      playNext()
+      break
+    case 'play-previous':
+      playPrevious()
+      break
+    case 'set-play-mode':
+      if (command.payload) playMode.value = command.payload
+      break
+    case 'go-home':
+      goToHome()
+      break
+    case 'go-search':
+      goToSearch()
+      break
+    case 'toggle-theme':
+      toggleThemeMode()
+      break
+    case 'toggle-visualizer':
+      settingsStore.audioVisualizerEnabled = !settingsStore.audioVisualizerEnabled
+      break
+    case 'toggle-lyric':
+      toggleLyricPanel()
+      break
+    case 'open-settings':
+      openSettings()
+      break
+    default:
+      console.warn('[MenuCommand] 未知菜单命令:', command.action)
+  }
+}
+
 onMounted(async () => {
+  // 注册 macOS 原生菜单命令监听
+  if (window.electronPlayer && window.electronPlayer.onMenuCommand) {
+    unregisterMenuCommand = window.electronPlayer.onMenuCommand(handleMenuCommand)
+  }
   // 主题应用：统一交给 themeStore（兼容旧版 localStorage 键名）
   themeStore.initTheme()
   loadPlaylists()
@@ -1519,6 +1563,11 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  // 注销 macOS 原生菜单命令监听
+  if (unregisterMenuCommand) {
+    unregisterMenuCommand()
+    unregisterMenuCommand = null
+  }
   window.removeEventListener('pink-music:play-track', handlePinkMusicEvent)
   window.removeEventListener('pink-music:open-download', handlePinkMusicEvent)
   window.removeEventListener('pink-music:open-login', handlePinkMusicEvent)
@@ -1535,10 +1584,9 @@ onUnmounted(() => {
       <div class="topbar-left">
         <h1 class="brand">Pink Music</h1>
       </div>
+
       <div class="topbar-right">
-        <!-- 一键切换深色/浅色模式，当前为 dark 时显示太阳图标（切浅色），
-             当前为 light 时显示月亮图标（切深色）。直接调用 themeStore。
-             Apple Music 主题下图标尺寸保持 18px，不受主题覆盖影响。 -->
+        <!-- 一键切换深色/浅色模式 -->
         <button
           class="topbar-btn theme-quick-toggle"
           :title="themeStore.currentTheme === 'dark' ? '切换到浅色模式' : '切换到深色模式'"
