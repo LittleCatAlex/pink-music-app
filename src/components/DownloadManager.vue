@@ -1,6 +1,7 @@
 <script setup>
 import { useDownloadStore } from '@/stores'
 import { formatAudioQualityLabel } from '@/utils/audio.js'
+import { appConfirm } from '@/utils/confirm'
 
 const downloadStore = useDownloadStore()
 
@@ -39,7 +40,14 @@ async function openDownloadFolder() {
 }
 
 async function clearTasks() {
-  if (confirm('确定要清空所有下载记录吗？已下载的文件不会被删除。')) {
+  const ok = await appConfirm({
+    title: '清空下载记录',
+    message: '确定要清空所有下载记录吗？',
+    detail: '已下载的文件不会被删除，仅清空历史列表。',
+    confirmText: '清空',
+    cancelText: '取消'
+  })
+  if (ok) {
     await downloadStore.clearTasks()
   }
 }

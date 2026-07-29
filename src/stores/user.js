@@ -1,4 +1,26 @@
 import { defineStore } from 'pinia'
+import { createPersistentStorage } from '@/utils/persistentStorage'
+import { s, defineSchema } from '@/utils/schema'
+
+// 登录态 UI 标记：原本散在 localStorage 的 'bilibili-login-cookie'
+// 现在主存到 userData/app-data/login.json（**用 safeStorage 加密**），localStorage 作 fallback
+//
+// Schema v1：登录 cookie 至少含 SESSDATA（其他字段如 bili_jct、vip_status 不强校验）
+const loginSchema = defineSchema({
+  version: 1,
+  fields: {
+    SESSDATA: s.string(''),
+    bili_jct: s.string(''),
+    DedeUserID: s.string(''),
+    // 任何扩展字段都保留在 unknown 桶
+  }
+})
+
+const loginStorage = createPersistentStorage('login', {
+  encrypt: true,            // 走 safeStorage 加密通道
+  debounceMs: 0,            // 登录态不能 debounce：扫码成功/退出登录必须立刻落盘
+  schema: loginSchema
+})
 
 export const useUserStore = defineStore('user', {
   state: () => ({
@@ -14,9 +36,13 @@ export const useUserStore = defineStore('user', {
     _lastFavError: ''
   }),
   getters: {
-    /** 是否存在 B 站登录 cookie（用于 UI 决策） */
+    /** 是否存在 B 站登录 cookie（主存储优先，缺失回退 localStorage） */
     hasLoginCookie(state) {
       if (state.isLoggedIn) return true
+      // 主存储 peek（同步走 localStorage 缓存层）
+      const peeked = loginStorage.peek(null)
+      if (peeked && peeked.SESSDATA) return true
+      // localStorage 老 key 兜底
       try {
         const raw = localStorage.getItem('bilibili-login-cookie')
         if (raw) {
@@ -28,6 +54,18 @@ export const useUserStore = defineStore('user', {
     }
   },
   actions: {
+    /**
+     * 启动时调用：从主存储恢复登录 cookie 标记。
+     * 注意：真正的 SESSDATA 仍在主进程 bilibili-cookies.json 里，
+     * 这里只缓存 UI 用得到的简化版（用于 hasLoginCookie getter）。
+     */
+    async load() {
+      const data = await loginStorage.load(null)
+      if (data && data.SESSDATA) {
+        // 触发迁移：写到 localStorage 兜底（保持老代码兼容）
+        try { localStorage.setItem('bilibili-login-cookie', JSON.stringify(data)) } catch (_) {}
+      }
+    },
     setQrcodeStatus(status, message = '') {
       this.qrcodeStatus = status
       this.qrcodeMessage = message
@@ -107,11 +145,11 @@ export const useUserStore = defineStore('user', {
     async fetchUserInfo() {
       if (!window.electronAPI) return
       try {
-        // 同步把主进程持久化 cookie 写进 localStorage（用于 UI 决策）
+        // 同步把主进程持久化 cookie 写进主存储（loginStorage.save 内部已含 localStorage 双写）
         try {
           const cookieRes = await window.electronAPI.getBilibiliCookies()
           if (cookieRes?.code === 0 && cookieRes.data) {
-            localStorage.setItem('bilibili-login-cookie', JSON.stringify(cookieRes.data))
+            await loginStorage.save(cookieRes.data)
           }
         } catch (e) { /* ignore */ }
         const result = await window.electronAPI.getUserInfo()
@@ -122,8 +160,8 @@ export const useUserStore = defineStore('user', {
           this.isLoggedIn = !!this.userInfo.mid
           return this.userInfo
         } else {
-          // 未登录或 cookie 失效：清空 localStorage 标记
-          localStorage.removeItem('bilibili-login-cookie')
+          // 未登录或 cookie 失效：清空主存储（loginStorage.remove 内部已含 localStorage 清理）
+          try { await loginStorage.remove() } catch (_) {}
           this.userInfo = null
           this.isLoggedIn = false
           return null
@@ -139,7 +177,8 @@ export const useUserStore = defineStore('user', {
       try {
         const res = await window.electronAPI.getBilibiliCookies()
         if (res?.code === 0 && res.data && res.data.SESSDATA) {
-          localStorage.setItem('bilibili-login-cookie', JSON.stringify(res.data))
+          // 主存储 + localStorage 双写（loginStorage.save 内部已含）
+          await loginStorage.save(res.data)
           // 同时尝试拉取用户信息
           const info = await this.fetchUserInfo()
           return !!info?.mid
@@ -214,7 +253,8 @@ export const useUserStore = defineStore('user', {
           console.error('退出登录失败:', error)
         }
       }
-      localStorage.removeItem('bilibili-login-cookie')
+      // loginStorage.remove 内部已含 localStorage 清理
+      try { await loginStorage.remove() } catch (_) {}
       this.userInfo = null
       this.isLoggedIn = false
       this.qrcodeUrl = ''

@@ -25,7 +25,8 @@ function openAddToPlaylist() {
 
 function addToPlaylist(playlist) {
   if (!playerStore.currentTrack || !playlist) return
-  playlistStore.addToPlaylist(playlist.id, playerStore.currentTrack)
+  // store 签名是 addToPlaylist(music, targetPlaylist)，注意参数顺序
+  playlistStore.addToPlaylist(playerStore.currentTrack, playlist)
   playlistStore.setShowAddToPlaylistModal(false)
 }
 </script>

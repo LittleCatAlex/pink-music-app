@@ -5931,19 +5931,24 @@ input:checked + .slider:before {
   /* 强制硬件加速 + 滤镜性能提示 */
   will-change: filter, transform;
   transform: translateZ(0);
-  background: var(--bg-primary);
+  /* 关键：背景置为透明，避免图片 blur 半径在边缘显出底层白底
+     （之前用 var(--bg-primary) 在浅色模式下会露出 #F8FAFC 白色描边）。
+     父级 .player-page.no-visualizer 自带浅色渐变 fallback，会自然透出。 */
+  background: transparent;
 }
 
 .player-page-cover-bg__img {
   position: absolute;
-  /* 关键：让图片至少放大到 1.4 倍视口，覆盖模糊后边缘可能露出的白边 */
-  top: -10%;
-  left: -10%;
-  width: 120%;
-  height: 120%;
+  /* 关键：让图片至少放大到 1.5 倍视口，确保 blur(25px) 半径完全在图片覆盖范围内，
+     不会在父容器边缘露出下方透出的白底（浅色模式下尤为明显）。
+     150% 尺寸 + scale(1.2) → 实际 180%，远超 1.4x 安全阈值。 */
+  top: -25%;
+  left: -25%;
+  width: 150%;
+  height: 150%;
   object-fit: cover;
   filter: blur(25px) saturate(1.4) brightness(0.85);
-  transform: scale(1.15);
+  transform: scale(1.2);
   transition: opacity 0.4s ease;
   will-change: filter, transform, opacity;
 }

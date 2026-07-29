@@ -28,15 +28,12 @@ function createPlaylist() {
 }
 
 function confirmCreatePlaylist() {
-  if (newPlaylistName.value.trim()) {
-    playlistStore.userPlaylists.push({
-      id: Date.now(),
-      name: newPlaylistName.value.trim(),
-      music: []
-    })
-    playlistStore.savePlaylists()
-    playlistStore.setShowCreatePlaylistModal(false)
-  }
+  const name = newPlaylistName.value.trim()
+  if (!name) return
+  // 用 store 的统一 createPlaylist，id 走稳定生成器（Date.now+random），避免快速连点冲突
+  playlistStore.createPlaylist(name)
+  playlistStore.savePlaylists()
+  playlistStore.setShowCreatePlaylistModal(false)
 }
 
 function cancelCreatePlaylist() {
@@ -68,13 +65,11 @@ function importPlaylist() {
       try {
         const imported = JSON.parse(event.target.result)
         if (imported.name && Array.isArray(imported.music)) {
-          const newPlaylist = {
-            id: Date.now(),
-            name: imported.name,
+          // 用统一 createPlaylist，id 走稳定生成器
+          playlistStore.createPlaylist(imported.name, {
             cover: imported.cover || '',
             music: imported.music
-          }
-          playlistStore.userPlaylists.push(newPlaylist)
+          })
           playlistStore.savePlaylists()
         }
       } catch (error) {
@@ -96,9 +91,16 @@ function deletePlaylist(playlist) {
   if (!playlist || playlist.isDefault) return
   const songCount = playlist.music?.length || playlist.media_count || 0
   // B 站同步的收藏夹删的是本地副本，B 站云端不受影响——文案上明确告知
-  const extra = playlist.isBiliFavorite ? '\n（仅删除本地副本，不会影响 B 站云端）' : ''
-  const msg = `确定要删除歌单「${playlist.name}」吗？\n该歌单包含 ${songCount} 首音乐，此操作不可恢复。${extra}`
-  if (!window.confirm(msg)) return
+  const extra = playlist.isBiliFavorite ? '（仅删除本地副本，不会影响 B 站云端）' : ''
+  const detail = `该歌单包含 ${songCount} 首音乐，此操作不可恢复。${extra}`
+  const ok = await appConfirm({
+    title: '删除歌单',
+    message: `确定要删除歌单「${playlist.name}」吗？`,
+    detail,
+    confirmText: '删除',
+    cancelText: '取消'
+  })
+  if (!ok) return
   playlistStore.deletePlaylist(playlist.id)
   // 通知父组件（App.vue）兜底处理「如果删的是当前正在查看的歌单则跳回列表」
   // 侧边栏自己拿不到 currentPlaylist 的实时值，交给 App.vue 统一管理

@@ -159,7 +159,14 @@ async function clearCache() {
   try {
     const result = await window.electronAPI.clearCache()
     if (result.code === 0) {
-      cacheSize.value = 0
+      // 重新从磁盘查询真实大小，避免 UI 显示 0 与实际不符
+      // （主进程里某些清理步骤可能失败但被 try/catch 吞了，硬写 0 就不准）
+      try {
+        const sizeRes = await window.electronAPI.getCacheSize()
+        cacheSize.value = sizeRes.code === 0 ? sizeRes.size : 0
+      } catch (_) {
+        cacheSize.value = 0
+      }
     }
   } catch (error) {
     console.error('清理缓存失败:', error)
@@ -608,6 +615,29 @@ function handleOpenSettings() {
       </div>
 
       <div class="settings-section glass-card">
+        <h3>窗口设置</h3>
+        <div class="setting-item">
+          <div class="setting-label-with-hint">
+            <label>窗口控制按钮</label>
+            <span class="setting-hint">在右上角显示最小化、最大化、关闭按钮（macOS 使用系统交通灯）</span>
+          </div>
+          <div class="setting-value">
+            <label
+              class="switch"
+              :title="settingsStore.windowControlsEnabled ? '关闭窗口控件' : '开启窗口控件'"
+            >
+              <input
+                type="checkbox"
+                :checked="settingsStore.windowControlsEnabled"
+                @change="settingsStore.setWindowControlsEnabled($event.target.checked)"
+              >
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-section glass-card">
         <h3>下载设置</h3>
         <div class="setting-item">
           <label>下载目录</label>
@@ -641,7 +671,7 @@ function handleOpenSettings() {
         <div class="about-content">
           <div class="about-header">
             <span class="logo-text">Pink Music</span>
-            <span class="version">v2.3.1</span>
+            <span class="version">v2.4.0</span>
           </div>
           <p class="about-desc">一款优雅的 B 站音乐播放器，让你发现并享受喜欢的音乐。</p>
           <button class="btn-secondary" @click="openGitHub">
@@ -660,7 +690,7 @@ function handleOpenSettings() {
     <div v-if="showClearCacheConfirm" class="modal-overlay" @click="showClearCacheConfirm = false">
       <div class="modal small-modal" @click.stop>
         <h2>确认清理缓存</h2>
-        <p>清理缓存将删除所有已下载的音频文件和应用缓存，此操作不可恢复。</p>
+        <p>清理缓存将删除已缓存的音频、应用临时文件与网络缓存，<b>不会影响你的下载文件</b>，此操作不可恢复。</p>
         <div class="modal-buttons">
           <button class="btn-secondary" @click="showClearCacheConfirm = false">取消</button>
           <button class="btn-danger" @click="clearCache">确认清理</button>

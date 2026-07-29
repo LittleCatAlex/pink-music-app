@@ -1,45 +1,70 @@
 import { defineStore } from 'pinia'
+import { createPersistentStorage } from '@/utils/persistentStorage'
+import { s, defineSchema } from '@/utils/schema'
+
+// ───────── 持久化结构改造 ─────────
+// 老版本把歌词数据分 3 个 localStorage key：
+//   pink-music-lyric-cache / pink-music-lyric-offsets / pink-music-lyric-sources
+// 新版本统一存到主存储的 'lyrics' 一个文件里：
+//   { cache: { key: { data, timestamp, source } }, offsets: { key: number }, sources: { key: string } }
+//   ↓ 一次原子写，三个字段同步更新，彻底杜绝"半新半旧"
+//
+// localStorage 兜底：第一次启动时 storage.load() 会自动从老 3 key 拼起来迁到主存储。
+
+// Schema v1：歌词数据 3 个 map
+// cache/offsets/sources 都是 { [key: string]: any }，不强校验内部结构（保留扩展性）
+const lyricsSchema = defineSchema({
+  version: 1,
+  fields: {
+    cache: s.object({}, false),    // 嵌套 object 走 any 字段
+    offsets: s.object({}, false),
+    sources: s.object({}, false)
+  }
+})
+
+const storage = createPersistentStorage('lyrics', { schema: lyricsSchema, debounceMs: 300 })
+
+const FALLBACK_CACHE = 'pink-music-lyric-cache'
+const FALLBACK_OFFSETS = 'pink-music-lyric-offsets'
+const FALLBACK_SOURCES = 'pink-music-lyric-sources'
+
+// 同步 peek：主存储 peek 不到时，从 3 个老 key 拼装一份
+function peekLyrics() {
+  const main = storage.peek(null)
+  if (main && typeof main === 'object' && (main.cache || main.offsets || main.sources)) {
+    return main
+  }
+  // 回退 3 个老 key
+  let cache = {}, offsets = {}, sources = {}
+  try { const r = localStorage.getItem(FALLBACK_CACHE); if (r) cache = JSON.parse(r) } catch (_) {}
+  try { const r = localStorage.getItem(FALLBACK_OFFSETS); if (r) offsets = JSON.parse(r) } catch (_) {}
+  try { const r = localStorage.getItem(FALLBACK_SOURCES); if (r) sources = JSON.parse(r) } catch (_) {}
+  if (Object.keys(cache).length === 0 && Object.keys(offsets).length === 0 && Object.keys(sources).length === 0) {
+    return null
+  }
+  return { cache, offsets, sources }
+}
+
+const initial = peekLyrics() || { cache: {}, offsets: {}, sources: {} }
 
 export const useLyricStore = defineStore('lyric', {
-  state: () => {
-    let cachedLyricData = {}
-    let cachedOffsets = {}
-    let cachedSources = {}
-    try {
-      const saved = localStorage.getItem('pink-music-lyric-cache')
-      if (saved) cachedLyricData = JSON.parse(saved)
-    } catch (e) {
-      cachedLyricData = {}
-    }
-    try {
-      const savedOffsets = localStorage.getItem('pink-music-lyric-offsets')
-      if (savedOffsets) cachedOffsets = JSON.parse(savedOffsets)
-    } catch (e) {
-      cachedOffsets = {}
-    }
-    try {
-      const savedSources = localStorage.getItem('pink-music-lyric-sources')
-      if (savedSources) cachedSources = JSON.parse(savedSources)
-    } catch (e) {
-      cachedSources = {}
-    }
-    return {
-      currentLyric: null,
-      loadedHash: '',
-      currentLineIndex: -1,
-      isLyricLoading: false,
-      lyricError: '',
-      lyricSource: '',
-      showLyricPanel: true,
-      lyricCache: cachedLyricData,
-      // 由 getCacheKey(bvid, cid, title) 索引；不再用单一标量
-      lyricOffsets: cachedOffsets,
-      // 记录"用户手动指定"的来源（netease cache / manual），便于重置
-      lyricSources: cachedSources,
-      // 当前正在浏览的 track（用于 per-track offset / source 关联）
-      currentKey: ''
-    }
-  },
+  state: () => ({
+    currentLyric: null,
+    loadedHash: '',
+    currentLineIndex: -1,
+    isLyricLoading: false,
+    lyricError: '',
+    lyricSource: '',
+    showLyricPanel: true,
+    // 由 getCacheKey(bvid, cid, author, title) 索引
+    lyricCache: initial.cache || {},
+    // 用户调整的每首歌偏移量（"歌词进度"）
+    lyricOffsets: initial.offsets || {},
+    // 记录"用户手动指定"的来源（netease cache / manual），便于重置
+    lyricSources: initial.sources || {},
+    // 当前正在浏览的 track
+    currentKey: ''
+  }),
   getters: {
     hasLyric() {
       return this.currentLyric && this.currentLyric.lyrics && this.currentLyric.lyrics.length > 0
@@ -52,7 +77,6 @@ export const useLyricStore = defineStore('lyric', {
       const labels = { netease: '网易云', manual: '手动选择' }
       return labels[this.lyricSource] || ''
     },
-    // 当前 track 的偏移：未设置返回 0
     currentOffset() {
       if (!this.currentKey) return 0
       return this.lyricOffsets[this.currentKey] || 0
@@ -62,61 +86,61 @@ export const useLyricStore = defineStore('lyric', {
     }
   },
   actions: {
+    /**
+     * 启动时调用：从主存储拉取最新的 cache/offsets/sources（缺失时回退 localStorage 老 3 key 并自动迁移）。
+     */
+    async load() {
+      const data = await storage.load(null)
+      if (data && typeof data === 'object') {
+        if (data.cache && typeof data.cache === 'object') this.lyricCache = data.cache
+        if (data.offsets && typeof data.offsets === 'object') this.lyricOffsets = data.offsets
+        if (data.sources && typeof data.sources === 'object') this.lyricSources = data.sources
+      }
+    },
+
     setCurrentLyric(lyric) {
       this.currentLyric = lyric
       this.currentLineIndex = -1
       this.lyricError = ''
       this.lyricSource = ''
     },
-    setLoadedHash(hash) {
-      this.loadedHash = hash
-    },
-    setCurrentLineIndex(index) {
-      this.currentLineIndex = index
-    },
-    setIsLyricLoading(loading) {
-      this.isLyricLoading = loading
-    },
-    setLyricError(error) {
-      this.lyricError = error
-    },
-    toggleLyricPanel() {
-      this.showLyricPanel = !this.showLyricPanel
-    },
-    setShowLyricPanel(show) {
-      this.showLyricPanel = show
-    },
+    setLoadedHash(hash) { this.loadedHash = hash },
+    setCurrentLineIndex(index) { this.currentLineIndex = index },
+    setIsLyricLoading(loading) { this.isLyricLoading = loading },
+    setLyricError(error) { this.lyricError = error },
+    toggleLyricPanel() { this.showLyricPanel = !this.showLyricPanel },
+    setShowLyricPanel(show) { this.showLyricPanel = show },
+
     // —— per-track offset ——
     setLyricOffset(offset) {
       if (!this.currentKey) {
-        console.warn('[lyricStore] setLyricOffset: currentKey 为空，请检查 watch 是否在挂载时触发 loadLyricForTrack')
+        console.warn('[lyricStore] setLyricOffset: currentKey 为空')
         return
       }
       this.lyricOffsets[this.currentKey] = offset
-      this.saveOffsets()
+      this.persist()
     },
     adjustLyricOffset(delta) {
       if (!this.currentKey) {
-        console.warn('[lyricStore] adjustLyricOffset: currentKey 为空，请检查 watch 是否在挂载时触发 loadLyricForTrack')
+        console.warn('[lyricStore] adjustLyricOffset: currentKey 为空')
         return
       }
       const next = (this.lyricOffsets[this.currentKey] || 0) + delta
       this.lyricOffsets[this.currentKey] = next
-      this.saveOffsets()
+      this.persist()
     },
-    resetLyricOffset() {
-      this.setLyricOffset(0)
-    },
+    resetLyricOffset() { this.setLyricOffset(0) },
+
     // —— per-track source ——
     setLyricSource(source) {
       this.lyricSource = source
       if (this.currentKey) {
         this.lyricSources[this.currentKey] = source
-        this.saveSources()
+        this.persist()
       }
     },
+
     // —— cache key ——
-    // 加入 author 维度，避免同名/同 bvid 缺失的不同歌曲共用同一缓存槽。
     getCacheKey(bvid, cid, title = '', artist = '') {
       const safeTitle = String(title || '').replace(/[^\p{L}\p{N}]/gu, '').slice(0, 40)
       const safeArtist = String(artist || '').replace(/[^\p{L}\p{N}]/gu, '').slice(0, 20)
@@ -134,11 +158,8 @@ export const useLyricStore = defineStore('lyric', {
       const key = this.getCacheKey(bvid, cid, title, artist)
       this.lyricCache[key] = { data: lyric, timestamp: Date.now(), source }
       this.cleanupCache()
-      this.saveCache()
-      if (source) {
-        this.lyricSources[key] = source
-        this.saveSources()
-      }
+      if (source) this.lyricSources[key] = source
+      this.persist()
     },
     cleanupCache() {
       const keys = Object.keys(this.lyricCache)
@@ -148,98 +169,78 @@ export const useLyricStore = defineStore('lyric', {
         toRemove.forEach(key => delete this.lyricCache[key])
       }
     },
-    saveCache() {
-      try {
-        localStorage.setItem('pink-music-lyric-cache', JSON.stringify(this.lyricCache))
-      } catch (e) {
-        console.warn('歌词缓存写入失败', e)
+
+    /**
+     * 统一持久化：把 cache / offsets / sources 三件套作为一份 JSON 原子写。
+     * 同时保留 localStorage 老 3 key 兜底（保证浏览器无 IPC 时也能持久化）。
+     */
+    async persist() {
+      const payload = {
+        cache: this.lyricCache,
+        offsets: this.lyricOffsets,
+        sources: this.lyricSources
       }
+      // localStorage 老 3 key 兜底（保证任何时候打开 inspect 都能看到老格式）
+      try { localStorage.setItem(FALLBACK_CACHE, JSON.stringify(this.lyricCache)) } catch (_) {}
+      try { localStorage.setItem(FALLBACK_OFFSETS, JSON.stringify(this.lyricOffsets)) } catch (_) {}
+      try { localStorage.setItem(FALLBACK_SOURCES, JSON.stringify(this.lyricSources)) } catch (_) {}
+      // 主存储：1 个原子写覆盖全部
+      await storage.save(payload)
     },
-    loadCache() {
-      try {
-        const saved = localStorage.getItem('pink-music-lyric-cache')
-        if (saved) this.lyricCache = JSON.parse(saved)
-        const o = localStorage.getItem('pink-music-lyric-offsets')
-        if (o) this.lyricOffsets = JSON.parse(o)
-        const s = localStorage.getItem('pink-music-lyric-sources')
-        if (s) this.lyricSources = JSON.parse(s)
-      } catch (e) {
-        this.lyricCache = {}
-        this.lyricOffsets = {}
-        this.lyricSources = {}
-      }
+
+    /** 兼容老 API 同步签名 */
+    persistSync() { this.persist().catch(e => console.warn('[lyricStore] persist failed:', e.message)) },
+    saveCache() { this.persistSync() },
+    saveOffsets() { this.persistSync() },
+    saveSources() { this.persistSync() },
+
+    async loadCache() {
+      // 兼容老 API
+      await this.load()
     },
-    saveOffsets() {
-      try {
-        localStorage.setItem('pink-music-lyric-offsets', JSON.stringify(this.lyricOffsets))
-      } catch (e) {
-        console.warn('偏移写入失败', e)
-      }
-    },
-    saveSources() {
-      try {
-        localStorage.setItem('pink-music-lyric-sources', JSON.stringify(this.lyricSources))
-      } catch (e) {
-        console.warn('来源写入失败', e)
-      }
-    },
+
     clearLyricCache() {
       this.lyricCache = {}
       this.lyricOffsets = {}
       this.lyricSources = {}
-      this.saveCache()
-      this.saveOffsets()
-      this.saveSources()
+      this.persist()
     },
-    // 把手动选中的歌词还原为"自动匹配"（B 站/网易云）
+
     async resetManualLyric() {
       const key = this.currentKey
-      if (!key) {
-        console.warn('[lyricStore] resetManualLyric: currentKey 为空，请检查 watch 是否在挂载时触发 loadLyricForTrack')
-        return { success: false, error: 'no currentKey' }
-      }
-      // 清除 manual source；缓存中已写入 source 字段也覆盖为 auto
+      if (!key) return { success: false, error: 'no currentKey' }
       if (this.lyricCache[key]) this.lyricCache[key].source = 'auto'
       delete this.lyricSources[key]
-      this.saveSources()
-      this.saveCache()
+      this.persist()
       this.lyricSource = ''
-      // 实际的 track 由调用方（LyricDisplay 的 handleResetManual）持有，
-      // 并通过 loadLyricForTrack 重新拉取，不在此处反向构造。
       return { success: true }
     },
+
     async loadLyricForTrack(track) {
       this.setCurrentLyric(null)
       this.setLoadedHash('')
       this.lyricError = ''
-      // 不再 resetLyricOffset() —— 每个 track 独立保留偏移
-
       const bvid = track.bvid
       const cid = track.cid || 1
       const title = track.title || ''
       const artist = track.author || ''
       this.currentKey = this.getCacheKey(bvid, cid, title, artist)
-
       return await this.fetchLyric(bvid, cid, title, artist)
     },
+
     async fetchLyric(bvid, cid, title, artist) {
       const cacheKey = this.getCacheKey(bvid, cid, title, artist)
-
       const cached = this.getCachedLyric(bvid, cid, title, artist)
       if (cached) {
         this.setCurrentLyric(cached)
         this.setLoadedHash(cacheKey)
-        // 恢复 source（manual / auto）
         const source = this.lyricSources[cacheKey] || cached.source || 'auto'
         this.lyricSource = source === 'manual' ? 'manual' : 'auto'
         return { success: true, fromCache: true }
       }
-
       this.setIsLyricLoading(true)
-
       try {
         const result = await window.electronAPI.getLyric({ bvid, cid, title, artist })
-
         if (result?.code === 0 && result.data) {
           const lyric = this.parseLyric(result.data)
           this.setCurrentLyric(lyric)
@@ -258,101 +259,69 @@ export const useLyricStore = defineStore('lyric', {
         this.setIsLyricLoading(false)
       }
     },
+
     async searchLyric(keyword) {
       try {
         const result = await window.electronAPI.searchLyric(keyword)
         if (result?.code === 0 && result.data) {
           return { success: true, data: result.data }
-        } else {
-          return { success: false, error: result?.message }
         }
+        return { success: false, error: result?.message }
       } catch (error) {
         return { success: false, error: error.message }
       }
     },
-    parseLyric(rawLyric) {
-      if (!rawLyric) {
-        return { lyrics: [], title: '', artist: '' }
-      }
 
+    parseLyric(rawLyric) {
+      if (!rawLyric) return { lyrics: [], title: '', artist: '' }
       const lyrics = []
       const lines = rawLyric.split('\n')
       let title = ''
       let artist = ''
-
       const timeRegex = /\[(\d{2}):(\d{2})\.(\d{2,3})\](.+)/
       const titleRegex = /\[ti:(.+)\]/
       const artistRegex = /\[ar:(.+)\]/
       const creditRegex = /^(作词|作曲|编曲|制作人|和声编写|和声|吉他|贝斯|鼓|键盘|弦乐|录音工程|录音|混音工程|混音|母带|母带后期|母带工程|监制|OP|SP|原唱|翻唱|原曲|改编|发行|出品|封面|设计|统筹|企划)[''']?\s*[:：]/
-
       for (const line of lines) {
         const titleMatch = line.match(titleRegex)
-        if (titleMatch) {
-          title = titleMatch[1]
-          continue
-        }
-
+        if (titleMatch) { title = titleMatch[1]; continue }
         const artistMatch = line.match(artistRegex)
-        if (artistMatch) {
-          artist = artistMatch[1]
-          continue
-        }
-
+        if (artistMatch) { artist = artistMatch[1]; continue }
         const match = line.match(timeRegex)
         if (match) {
           const minutes = parseInt(match[1])
           const seconds = parseInt(match[2])
           const milliseconds = parseInt(match[3].padEnd(3, '0'))
           const text = match[4].trim()
-
           if (text) {
             const timeMs = minutes * 60000 + seconds * 1000 + milliseconds
-
             if (creditRegex.test(text)) {
               if (timeMs < 11000) continue
             }
-
             if (timeMs < 11000 && (
               text.includes('·原版') || text.includes('·伴奏') ||
               text.includes('·和声') || text.includes('·纯音乐') ||
               text.includes('未经许可') || text.includes('未经授权') ||
               text.includes('版权所有') || text.includes('本歌曲') ||
               text.includes('https://') || text.includes('http://')
-            )) {
-              continue
-            }
-
-            lyrics.push({
-              time: timeMs,
-              text
-            })
+            )) continue
+            lyrics.push({ time: timeMs, text })
           }
         }
       }
-
       lyrics.sort((a, b) => a.time - b.time)
-
       return { lyrics, title, artist }
     },
-    updateCurrentLine(currentTime) {
-      if (!this.hasLyric) {
-        this.currentLineIndex = -1
-        return
-      }
 
-      // 使用 per-track offset
+    updateCurrentLine(currentTime) {
+      if (!this.hasLyric) { this.currentLineIndex = -1; return }
       const offset = this.currentOffset
       const adjustedTime = currentTime * 1000 + offset
       const lyrics = this.currentLyric.lyrics
       let index = -1
-
       for (let i = lyrics.length - 1; i >= 0; i--) {
-        if (lyrics[i].time <= adjustedTime + 500) {
-          index = i
-          break
-        }
+        if (lyrics[i].time <= adjustedTime + 500) { index = i; break }
       }
-
       this.currentLineIndex = index
     }
   }

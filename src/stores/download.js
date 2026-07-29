@@ -44,7 +44,7 @@ export const useDownloadStore = defineStore('download', {
       }
 
       const waitingTask = {
-        id: `dl_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        id: `dl_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`,
         title: taskInfo.title || taskInfo.fileName || '未知文件',
         author: taskInfo.author || '',
         bvid: taskInfo.bvid || '',

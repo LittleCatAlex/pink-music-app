@@ -2,6 +2,7 @@
 import { ref, watch, onBeforeUnmount, nextTick } from 'vue'
 import QRCode from 'qrcode'
 import { useUserStore } from '@/stores'
+import { appConfirm } from '@/utils/confirm'
 
 const props = defineProps({
   visible: {
@@ -51,7 +52,14 @@ async function handleRestoreUserInfo() {
 }
 
 async function handleLogout() {
-  if (!confirm('确认要退出登录吗？')) return
+  const ok = await appConfirm({
+    title: '退出登录',
+    message: '确认要退出登录吗？',
+    detail: '退出后需要重新扫码登录 B 站账号。',
+    confirmText: '退出',
+    cancelText: '取消'
+  })
+  if (!ok) return
   await userStore.logout()
   emit('update:visible', false)
 }

@@ -15,6 +15,15 @@ import LoginPanel from './components/LoginPanel.vue'
 import { applyLiquidGlass, destroyLiquidGlass } from './composables/useLiquidGlass'
 import { appConfirm } from './utils/confirm'
 
+// flush 协议相关：保存 IPC 监听器反注册函数，HMR 时清理旧监听器，避免重复注册
+let unregisterFlushListener = null
+// HMR 兜底：模块级标记，让 vite HMR 重新执行前先清理旧监听器
+const HMR_FLUSH_KEY = '__pink_music_flush_listener_installed__'
+if (typeof window !== 'undefined' && window[HMR_FLUSH_KEY]) {
+  try { window[HMR_FLUSH_KEY]() } catch (_) {}
+  window[HMR_FLUSH_KEY] = null
+}
+
 const topbarRef = ref(null)
 const playerBarRef = ref(null)
 const liquidGlassInstances = new Map()
@@ -230,6 +239,9 @@ async function loadFavResources() {
         }
       }
     )
+    // 兜底 save：loadAllFavoriteResources 内部应该已经 save，但这里再 save 一次
+    // 防止它内部异常退出时已加载的 partial 数据没落盘
+    try { await playlistStore.savePlaylists() } catch (_) {}
     if (added === 0) {
       const detail = userStore._lastFavError || '请稍后重试'
       alert(`未拉取到新视频（${detail}）。可尝试重新登录 B 站后再试。`)
@@ -239,6 +251,8 @@ async function loadFavResources() {
     }
   } catch (error) {
     console.error('加载收藏夹内容失败:', error)
+    // 关键：异常退出时 partial 数据可能已在内存里；显式 save 一次兜底
+    try { await playlistStore.savePlaylists() } catch (_) {}
     alert('加载失败：' + (error?.message || '未知错误'))
   } finally {
     isLoadingFavResources.value = false
@@ -1250,16 +1264,12 @@ function createPlaylist() {
 }
 
 function confirmCreatePlaylist() {
-  if (newPlaylistName.value.trim()) {
-    const newId = Date.now()
-    playlistStore.userPlaylists.push({
-      id: newId,
-      name: newPlaylistName.value.trim(),
-      music: []
-    })
-    playlistStore.savePlaylists()
-    showCreatePlaylistModal.value = false
-  }
+  const name = newPlaylistName.value.trim()
+  if (!name) return
+  // 用 store 的统一 createPlaylist，id 走稳定生成器（Date.now+random），避免快速连点冲突
+  const pl = playlistStore.createPlaylist(name)
+  playlistStore.savePlaylists()
+  showCreatePlaylistModal.value = false
 }
 
 function cancelCreatePlaylist() {
@@ -1412,13 +1422,11 @@ function importPlaylist() {
       try {
         const imported = JSON.parse(event.target.result)
         if (imported.name && Array.isArray(imported.music)) {
-          const newPlaylist = {
-            id: Date.now(),
-            name: imported.name,
+          // 用统一 createPlaylist，id 走稳定生成器
+          const pl = playlistStore.createPlaylist(imported.name, {
             cover: imported.cover || '',
             music: imported.music
-          }
-          playlistStore.userPlaylists.push(newPlaylist)
+          })
           playlistStore.savePlaylists()
         }
       } catch (error) {
@@ -1536,7 +1544,14 @@ onMounted(async () => {
   }
   // 主题应用：统一交给 themeStore（兼容旧版 localStorage 键名）
   themeStore.initTheme()
-  loadPlaylists()
+  // 关键修复：歌单加载必须 await，不能 fire-and-forget！
+  // 否则会出现以下竞态：
+  //   1) peek 拿不到 localStorage（空）→ 初始 state = []
+  //   2) 用户立刻添加歌单/歌曲 → savePlaylists() 写空 state 到主存储
+  //   3) async load() 才完成 → 主存储原数据已被覆盖
+  // 改为 await：等 load() 完成、_loaded 置位、迁移完成后再继续，
+  // 期间任何 savePlaylists() 会被 store 内部排队，load 完才 flush。
+  await playlistStore.load()
   loadRecommendedMusic()
   setupMediaSessionHandlers()
   downloadStore.loadTasks()
@@ -1545,6 +1560,25 @@ onMounted(async () => {
   window.addEventListener('pink-music:open-download', handlePinkMusicEvent)
   window.addEventListener('pink-music:open-login', handlePinkMusicEvent)
   window.addEventListener('pink-music:playlist-deleted', handlePinkMusicEvent)
+
+  // ───────── 持久化存储启动加载 ─────────
+  // 各 store 的 load() 都会从主存储 userData/app-data/<key>.json 拉最新数据；
+  // 主存储为空时自动从 localStorage 老 key 迁移到主存储。
+  // 并行执行，减少启动延迟。
+  // 关键修复：把 playlistStore.load() 也加进来。
+  // 虽然上面已经 await 过一次（保证首屏前就绪），这里再放一次是为了
+  // 兼容"组件 onMounted 之前已经触发 load 但还没完成"的边界场景（如
+  // 别的组件 import 了 store 立刻调用 load()），统一让 _loaded 流程
+  // 在主流程里被正确识别。
+  await Promise.allSettled([
+    themeStore.load(),
+    settingsStore.load(),
+    playerStore.load(),
+    lyricStore.load(),
+    userStore.load(),
+    playlistStore.load()
+  ])
+
   // 启动时尝试恢复登录态：先检查主进程是否持有 B 站 cookie，再拉取用户信息
   try {
     const restored = await userStore.restoreFromCookies()
@@ -1560,6 +1594,43 @@ onMounted(async () => {
   watch(playerBarRef, (val) => {
     if (val) setupLiquidGlass()
   })
+
+  // 关窗口前 flush 协议：主进程 before-quit 时通知
+  if (window.electronAPI?.onFlushRequired) {
+    const flushHandler = async () => {
+      try {
+        console.log('[App] 收到 flush 请求，开始同步所有 store')
+        // 歌单最重要，先 flush
+        await playlistStore.flush(2500)
+        // 其他 store 也强制 flush：先同步写 localStorage（writeLocalJsonNow 走
+        // 同步写，不依赖 debounce 队列），再发主存储 IPC。
+        // 这样能在关窗口的 3s 死线前确保 localStorage 一定落盘，主存储 IPC 已经发出。
+        const flushTasks = []
+        try { flushTasks.push(themeStore.persist?.() ?? themeStore.save?.()) } catch (_) {}
+        try { flushTasks.push(settingsStore.persist?.() ?? settingsStore.save?.()) } catch (_) {}
+        try { flushTasks.push(playerStore.saveHistory?.()) } catch (_) {}
+        try { flushTasks.push(lyricStore.persist?.() ?? lyricStore.save?.()) } catch (_) {}
+        try { flushTasks.push(userStore.persist?.() ?? userStore.save?.()) } catch (_) {}
+        await Promise.allSettled(flushTasks)
+        console.log('[App] flush 完毕，通知主进程')
+      } catch (e) {
+        console.error('[App] flush 异常:', e.message)
+      } finally {
+        // 无论成功失败都告诉主进程可以退出了（3s 超时保护）
+        try { window.electronAPI?.notifyFlushDone?.() } catch (_) {}
+      }
+    }
+    unregisterFlushListener = window.electronAPI.onFlushRequired(flushHandler)
+    // 暴露给 HMR 用：让下次模块热更时能调用反注册
+    window[HMR_FLUSH_KEY] = unregisterFlushListener
+  }
+
+  // 兜底：浏览器原生 beforeunload 事件（双保险，覆盖 webview 之类场景）
+  const beforeUnloadFlush = () => {
+    try { playlistStore.flush?.(500) } catch (_) {}
+  }
+  window.addEventListener('beforeunload', beforeUnloadFlush)
+  window.addEventListener('pagehide', beforeUnloadFlush)
 })
 
 onUnmounted(() => {
@@ -1567,6 +1638,14 @@ onUnmounted(() => {
   if (unregisterMenuCommand) {
     unregisterMenuCommand()
     unregisterMenuCommand = null
+  }
+  // 注销 flush 监听器（HMR / 组件卸载时清理，避免重复注册）
+  if (unregisterFlushListener) {
+    try { unregisterFlushListener() } catch (_) {}
+    unregisterFlushListener = null
+  }
+  if (window[HMR_FLUSH_KEY]) {
+    window[HMR_FLUSH_KEY] = null
   }
   window.removeEventListener('pink-music:play-track', handlePinkMusicEvent)
   window.removeEventListener('pink-music:open-download', handlePinkMusicEvent)
