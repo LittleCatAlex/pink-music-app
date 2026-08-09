@@ -13,8 +13,10 @@ const themeSchema = defineSchema({
   }
 })
 
-// 主存储 key：theme；localStorage 兜底 key：pink-music-theme + pink-music-color
-const storage = createPersistentStorage('theme', { schema: themeSchema, debounceMs: 300 })
+// 主存储 key：theme；localStorage 兜底：'pink-music-theme'
+// 老的 'pink-music-color' key 只在 initialState 同步初值时 peek 一次（历史兜底），
+// 之后无人再写 —— 让首次升级的旧用户能恢复自己选的颜色。
+const storage = createPersistentStorage('theme', { schema: themeSchema, debounceMs: 0 })
 
 // localStorage 同步初值（防首屏闪烁；主存储 load() 完成后会覆盖）
 const initialTheme = storage.peek({ currentTheme: 'dark', currentColor: 'pink' })
@@ -25,7 +27,13 @@ const initialState = {
     : (initialTheme?.currentTheme || 'dark'),
   currentColor: (typeof initialTheme === 'object' && initialTheme?.currentColor)
     ? initialTheme.currentColor
-    : localStorage.getItem('pink-music-color') || 'pink'
+    : (() => {
+        // 历史兜底：升级前用户单独存的 'pink-music-color'，仅在 initialState 阶段读一次
+        try {
+          const r = localStorage.getItem('pink-music-color')
+          return r ? r : 'pink'
+        } catch (_) { return 'pink' }
+      })()
 }
 
 export const useThemeStore = defineStore('theme', {

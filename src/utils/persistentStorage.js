@@ -26,6 +26,44 @@
 
 const LOCAL_PREFIX = 'pink-music-'
 
+/**
+ * 判断 localStorage 异常是否为配额满。
+ * 跨浏览器：Chrome/Edge/Safari 都用 QuotaExceededError，但 name 命名有差异，
+ * 同时检查 code === 22 / code === 1014 (旧 Firefox) 兜底。
+ */
+function isQuotaError(e) {
+  if (!e) return false
+  if (e.name === 'QuotaExceededError' ||
+      e.name === 'NS_ERROR_DOM_QUOTA_REACHED' ||
+      e.code === 22 ||
+      e.code === 1014) return true
+  // Safari 私密浏览模式也会抛 quota，但 message 不一定标准
+  return /quota/i.test(e.message || '')
+}
+
+// 老 key 注册表：用于"清空所有缓存"和"重置应用"工具。
+// 渲染层每一处绕过 createPersistentStorage 的 localStorage 写都登记在这里。
+// 注意：这些是 *历史* / 兜底 key 名字；新写入走统一的 'pink-music-<storeKey>'。
+export const LEGACY_LOCAL_KEYS = [
+  'bilibili-login-cookie',
+  'pink-music-color',
+  'pink-music-audio-visualizer-enabled',
+  'pink-music-audio-visualizer-intensity',
+  'pink-music-audio-quality',
+  'pink-music-window-controls-enabled',
+  'pink-music-audio-eq-enabled',
+  'pink-music-audio-eq-bands',
+  'pink-music-audio-eq-preset',
+  'pink-music-lyric-cache',
+  'pink-music-lyric-offsets',
+  'pink-music-lyric-sources',
+  'pink-music-history',
+  'playlists',
+  'userPlaylists',
+  'pink-music-favorites',
+  'pink-music-migrated-v3'
+]
+
 // 每个 store 一个 debounce timer
 const _pendingWrites = new Map() // storeKey -> { value, timer, latestSerialized }
 
@@ -58,6 +96,20 @@ function writeLocalJsonNow(storeKey, value) {
     localStorage.setItem(localKey(storeKey), serialized)
     return true
   } catch (e) {
+    // QuotaExceededError：先清掉已知的老 legacy key 腾空间，再重试一次
+    if (isQuotaError(e)) {
+      console.warn(`[persistentStorage] localStorage quota 满，清理 LEGACY_LOCAL_KEYS 后重试 ${storeKey}`)
+      for (const legacyKey of LEGACY_LOCAL_KEYS) {
+        try { localStorage.removeItem(legacyKey) } catch (_) {}
+      }
+      try {
+        localStorage.setItem(localKey(storeKey), JSON.stringify(value))
+        return true
+      } catch (e2) {
+        console.warn(`[persistentStorage] 重试后仍失败 ${storeKey}:`, e2.message)
+        return false
+      }
+    }
     // localStorage 可能 quota 满 —— 主存储才是主存，所以这里只 warn 不抛
     console.warn(`[persistentStorage] localStorage 写 ${storeKey} 失败:`, e.message)
     return false
@@ -125,6 +177,15 @@ export function createPersistentStorage(storeKey, options = {}) {
 
   // 选择 IPC 通道：加密 vs 普通
   const api = (encrypt ? window.electronAPI?.appDataEncrypted : window.electronAPI?.appData) || null
+  // 区分两种主存状态：
+  //  - _apiAvailable = false：通道根本没暴露（preload.js 漏了 / 非 Electron 环境）
+  //  - _apiAvailable = true 但 res.code !== 0：通道存在但主存 IPC 报错
+  // 区分清楚后日志噪音可读、调试更快
+  const _apiAvailable = !!api
+  const _channelLabel = encrypt ? 'appDataEncrypted' : 'appData'
+  if (!_apiAvailable) {
+    console.warn(`[persistentStorage] ${storeKey}: ${_channelLabel} 通道不可用（preload 没暴露？非 Electron？），主存会静默跳过`)
+  }
 
   /** 跑 schema 校验 + 迁移。如果没声明 schema，原样返回。 */
   function applySchema(raw) {
@@ -134,7 +195,11 @@ export function createPersistentStorage(storeKey, options = {}) {
   }
 
   return {
-    /** 同步 peek localStorage（用于 state() 初值，避免首屏闪一下） */
+    /**
+     * 同步 peek：返回 localStorage 镜像（双写策略保证 localStorage = 主存最新值）。
+     * 注意：主存崩溃恢复场景下这里看到的是"已知最后成功值"，不会比主存更旧。
+     * 用途：store state() 初值，避免首帧渲染时空 state → populate 引起的 UI 闪烁
+     */
     peek(defaultValue = null) {
       const local = readLocalJson(storeKey)
       return local !== null ? local : defaultValue
@@ -147,14 +212,17 @@ export function createPersistentStorage(storeKey, options = {}) {
      */
     async load(defaultValue = null) {
       // 1) 优先主存储
-      if (api) {
+      if (_apiAvailable) {
         try {
           const res = await api.get(storeKey)
           if (res && res.code === 0 && res.data !== null && res.data !== undefined) {
             return applySchema(res.data)
           }
+          if (res && res.code !== 0) {
+            console.warn(`[persistentStorage] 主存储读 ${storeKey} 失败: code=${res.code} msg=${res.message}`)
+          }
         } catch (e) {
-          console.warn(`[persistentStorage] 主存储读 ${storeKey} 失败，回退 localStorage:`, e.message)
+          console.error(`[persistentStorage] 主存储读 ${storeKey} 抛错:`, e.message)
         }
       }
       // 2) 回退 localStorage
@@ -165,7 +233,7 @@ export function createPersistentStorage(storeKey, options = {}) {
         // 后续 save() 也会同时往主存储写，两次并发写会互相覆盖，
         // 并且迁移的写可能在 save 之后到达，导致本地内存有的数据落盘后又被空数据覆盖。
         // await 后，迁移一定先完成，再返回，调用方就可以安全 save 了。
-        if (api) {
+        if (_apiAvailable) {
           try {
             await api.set(storeKey, local)
           } catch (err) {
@@ -185,6 +253,11 @@ export function createPersistentStorage(storeKey, options = {}) {
      */
     async save(value) {
       const result = { main: false, local: 'skipped' }
+      // 剥离 Pinia reactive Proxy：IPC 结构化克隆无法序列化 Proxy，
+      // 否则主存储写入会抛 "An object could not be cloned."（settings/player 长期丢数据的根因）
+      try { value = JSON.parse(JSON.stringify(value)) } catch (e) {
+        console.warn(`[persistentStorage] save ${storeKey} 深拷贝失败:`, e.message)
+      }
       // localStorage 走 debounce（200ms 内合并 + 值未变跳过）
       const localWritten = writeLocalJsonDebouncedOrNow(storeKey, value, debounceMs)
       if (localWritten === 'written') result.local = 'written'
@@ -193,12 +266,12 @@ export function createPersistentStorage(storeKey, options = {}) {
       else if (localWritten === 'debounced') result.local = 'pending'
       else result.local = 'skipped'
       // 主存储（加密或普通）异步写
-      if (api) {
+      if (_apiAvailable) {
         try {
           const res = await api.set(storeKey, value)
           result.main = !!(res && res.code === 0)
           if (!result.main) {
-            console.warn(`[persistentStorage] 主存储写 ${storeKey} 返回失败:`, res?.message)
+            console.warn(`[persistentStorage] 主存储写 ${storeKey} 失败: code=${res?.code} msg=${res?.message}`)
           }
         } catch (e) {
           console.error(`[persistentStorage] 主存储写 ${storeKey} 抛错:`, e.message)
@@ -218,9 +291,8 @@ export function createPersistentStorage(storeKey, options = {}) {
         _pendingWrites.delete(storeKey)
       }
       try { localStorage.removeItem(localKey(storeKey)) } catch (e) {}
-      if (api) {
-        try { await api.remove(storeKey) } catch (e) {}
-      }
+      if (_apiAvailable) {
+        try { await api.remove(storeKey) } catch (e) {} }
     },
 
     /** 调试用：是否在 pending 队列里 */

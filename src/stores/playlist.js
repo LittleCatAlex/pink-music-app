@@ -33,8 +33,18 @@ const LEGACY_LOCAL_KEYS = [
   'pink-music-favorites'   // 早期可能只有收藏夹
 ]
 
-// 迁移锁：写入 localStorage 表示"已成功迁移到主存储，以后 peek 不再回退到老 key"
+// 迁移锁：老实现写 localStorage 'pink-music-migrated-v3' 表示"已迁移到主存储"。
+// 新实现不再写新锁 —— 迁移成功后会清理所有老 localStorage key，锁自然失效。
+// 这里仍然 peek 这个 key 是为了：旧用户迁移后留有锁，read 行为不变。
 const MIGRATION_LOCK_KEY = 'pink-music-migrated-v3'
+
+/**
+ * 把"迁移锁"也一起清掉。属于"清理老 key"的一部分。
+ * 老锁文件没被新流程写，只是读 + 清。清理一次即可。
+ */
+function cleanupStaleMigrationLocks() {
+  try { localStorage.removeItem(MIGRATION_LOCK_KEY) } catch (_) {}
+}
 
 // 迁移重试次数（写主存储失败时）
 const MIGRATION_MAX_RETRY = 3
@@ -258,8 +268,8 @@ export const usePlaylistStore = defineStore('playlist', {
     showPlaylistManager: false,
     // 内部状态
     _loaded: false,           // load() 是否已完成
-    _pendingSave: null,      // load() 完成前最后一次 save 请求，load 完会 flush
-    _migratedKeys: [],       // 启动期迁移日志用
+    _pendingSave: [],         // load() 完成前累积的 save 请求（队列，避免丢中间步骤）
+    _migratedKeys: [],        // 启动期迁移日志用
     _migrationSourceKey: null // 真正迁移成功的源 key（用于回填 / 清理）
   }),
   actions: {
@@ -342,13 +352,19 @@ export const usePlaylistStore = defineStore('playlist', {
       await Promise.resolve()
 
       // 6) flush load 期间累积的 save 请求
-      // 关键：必须把 pending 跟刚加载的数据合并，不能简单覆盖。
+      // 关键：必须把所有 pending 跟刚加载的数据 merge，不能简单覆盖。
       // 否则用户在 load 完之前做的添加/新建操作会被加载到的旧数据覆盖掉。
-      if (this._pendingSave !== null) {
-        const pending = this._pendingSave
-        this._pendingSave = null
+      // 注意：mergePlaylists 自身已支持"loaded 基础上叠加多个 pending 快照"，
+      // 这里用一个 reduce 把队列里的所有快照依次合并进去。
+      if (this._pendingSave.length > 0) {
+        const pendingQueue = this._pendingSave
+        this._pendingSave = []
         try {
-          this.userPlaylists = mergePlaylists(this.userPlaylists, pending)
+          let merged = this.userPlaylists
+          for (const snap of pendingQueue) {
+            merged = mergePlaylists(merged, snap)
+          }
+          this.userPlaylists = merged
           await this.savePlaylists()
         } catch (e) {
           console.warn('[playlistStore] flush pending save 失败:', e.message)
@@ -418,14 +434,15 @@ export const usePlaylistStore = defineStore('playlist', {
      * 把当前 userPlaylists 写入主存储 + localStorage 双写。
      * 关键修复：
      *   - load() 完成前不直接 save（避免空 state 覆盖主存储的旧数据）
-     *   - 改为排队，load 完成后由 load() 末尾统一 flush
+     *   - 改为队列：每次 save 都把当前快照压栈，load 完成后由 load() 末尾统一 merge flush
+     *   - 队列而不是单一 slot：保存"用户加载窗口期内做的所有操作"，中间步骤不丢
      */
     async savePlaylists() {
       if (!this._loaded) {
-        // 还在加载中：排队"最后一次"的快照，等 load 完再写
+        // 还在加载中：压栈当前快照，等 load 完一次性 merge
         // 这样能避免在主存储还没读到、localStorage 还在迁移的空窗期里
         // 把空 userPlaylists 写到主存储，把用户原来的歌单覆盖掉
-        this._pendingSave = JSON.parse(JSON.stringify(this.userPlaylists))
+        this._pendingSave.push(JSON.parse(JSON.stringify(this.userPlaylists)))
         return { deferred: true }
       }
       return await this._writeNow()
@@ -526,6 +543,10 @@ export const usePlaylistStore = defineStore('playlist', {
         (m.cid ?? null) === (music.cid ?? null)
       )
       if (!exists) target.music.push(music)
+      // 封面始终跟随第一首音乐（B 站收藏夹保留 B 站云端封面）
+      if (!target.isBiliFavorite) {
+        target.cover = target.music[0]?.cover || ''
+      }
       await this.savePlaylists()
       return target
     },

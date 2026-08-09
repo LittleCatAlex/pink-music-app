@@ -231,6 +231,7 @@ function defineSchema({ version, fields, migrations = {} }) {
       } else {
         // 3) 跑迁移链
         data = raw
+        let migrationBroken = false
         for (let v = fromVersion; v < version; v++) {
           const migrator = migrations[v + 1]
           if (typeof migrator === 'function') {
@@ -241,36 +242,59 @@ function defineSchema({ version, fields, migrations = {} }) {
                 console.log(`[schema] 迁移 v${v} → v${v + 1} 完成`)
               }
             } catch (e) {
-              console.warn(`[schema] 迁移 v${v} → v${v + 1} 失败:`, e.message)
-              // 迁移失败：放弃迁移，从默认值起
-              return defaultsFromFields(fields)
+              // 关键：迁移抛错时不要直接清空 data！用当前 data 继续做字段级校验，
+              // 至少保留能校验通过的部分（不通过的部分走 default 兜底）。
+              console.warn(`[schema] 迁移 v${v} → v${v + 1} 失败:`, e.message, '— 保留原数据，按当前 schema 校验')
+              migrationBroken = true
+              break
             }
           } else {
-            console.warn(`[schema] 缺少迁移 v${v} → v${v + 1}，使用默认值`)
-            return defaultsFromFields(fields)
+            console.warn(`[schema] 缺少迁移 v${v} → v${v + 1}，保留原数据按当前 schema 校验`)
+            migrationBroken = true
+            break
           }
+        }
+        if (migrationBroken) {
+          // 跳过剩余迁移，直接对当前 data 做字段级兜底校验
+          return _validateFieldsOnly(data, fields, version)
         }
       }
       // 4) 字段级校验 + 兜底
-      const out = {}
-      const fieldKeys = Object.keys(fields)
-      for (const k of fieldKeys) {
-        const r = fields[k].validate(data[k])
-        if (!r.ok) {
-          console.warn(`[schema] ${k} 校验失败: ${r.error}，用默认值兜底`)
-          out[k] = fieldDefault(fields[k])
-        } else {
-          out[k] = r.value
-        }
-      }
-      // 保留未知字段（避免破坏扩展）
-      for (const k of Object.keys(data)) {
-        if (!(k in out)) out[k] = data[k]
-      }
-      out._schemaVersion = version
-      return out
+      return _validateFieldsOnly(data, fields, version)
     }
   }
+}
+
+/**
+ * 只做字段级校验 + 兜底，不跑迁移。
+ * 用途：迁移失败时（migrator 抛错 / 缺迁移函数）用当前 data 继续校验，
+ *      至少把"通过校验的字段"保留下来，比直接 defaultsFromFields 把整份数据清空更稳。
+ *
+ * 行为：
+ * 1) 遍历 fields，对每个字段跑 validate()：
+ *    - 通过 → 用 validated value
+ *    - 失败 → warn + 走 fieldDefault 兜底
+ * 2) 保留 data 中的未知字段（避免破坏扩展字段）
+ * 3) 写 _schemaVersion = version，下次 parse 不再尝试迁移
+ */
+function _validateFieldsOnly(data, fields, version) {
+  const out = {}
+  const fieldKeys = Object.keys(fields)
+  for (const k of fieldKeys) {
+    const r = fields[k].validate(data[k])
+    if (!r.ok) {
+      console.warn(`[schema] ${k} 校验失败: ${r.error}，用默认值兜底`)
+      out[k] = fieldDefault(fields[k])
+    } else {
+      out[k] = r.value
+    }
+  }
+  // 保留未知字段（避免破坏扩展）
+  for (const k of Object.keys(data)) {
+    if (!(k in out)) out[k] = data[k]
+  }
+  out._schemaVersion = version
+  return out
 }
 
 function defaultsFromFields(fields) {

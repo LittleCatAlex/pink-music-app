@@ -3,7 +3,10 @@ import { createPersistentStorage } from '@/utils/persistentStorage'
 import { s, defineSchema } from '@/utils/schema'
 
 // 登录态 UI 标记：原本散在 localStorage 的 'bilibili-login-cookie'
-// 现在主存到 userData/app-data/login.json（**用 safeStorage 加密**），localStorage 作 fallback
+// 现在主存到 userData/app-data/login.json，localStorage 作 fallback
+//
+// TODO (2026-Q3): 接入 safeStorage 加密通道后，把 encrypt 改回 true。
+// 当前：safeStorage 通道尚未实现，走明文 appData 落盘 + localStorage 双兜底。
 //
 // Schema v1：登录 cookie 至少含 SESSDATA（其他字段如 bili_jct、vip_status 不强校验）
 const loginSchema = defineSchema({
@@ -17,7 +20,7 @@ const loginSchema = defineSchema({
 })
 
 const loginStorage = createPersistentStorage('login', {
-  encrypt: true,            // 走 safeStorage 加密通道
+  encrypt: false,           // TODO: 等 appDataEncrypted 通道实现后改回 true
   debounceMs: 0,            // 登录态不能 debounce：扫码成功/退出登录必须立刻落盘
   schema: loginSchema
 })
@@ -58,13 +61,12 @@ export const useUserStore = defineStore('user', {
      * 启动时调用：从主存储恢复登录 cookie 标记。
      * 注意：真正的 SESSDATA 仍在主进程 bilibili-cookies.json 里，
      * 这里只缓存 UI 用得到的简化版（用于 hasLoginCookie getter）。
+     *
+     * 不再写回老 localStorage key：createPersistentStorage 已经写 localStorage 新 key 兜底。
+     * 老 key 'bilibili-login-cookie' 只在 hasLoginCookie getter 里读一次（历史兜底）。
      */
     async load() {
-      const data = await loginStorage.load(null)
-      if (data && data.SESSDATA) {
-        // 触发迁移：写到 localStorage 兜底（保持老代码兼容）
-        try { localStorage.setItem('bilibili-login-cookie', JSON.stringify(data)) } catch (_) {}
-      }
+      await loginStorage.load(null)
     },
     setQrcodeStatus(status, message = '') {
       this.qrcodeStatus = status
@@ -198,6 +200,20 @@ export const useUserStore = defineStore('user', {
         return false
       }
     },
+    /**
+     * 关窗 flush 时调用：确保当前登录 cookie 已持久化到主存储 + localStorage。
+     */
+    async persist() {
+      try {
+        const cookieRes = await window.electronAPI?.getBilibiliCookies?.()
+        if (cookieRes?.code === 0 && cookieRes.data) {
+          await loginStorage.save(cookieRes.data)
+        }
+      } catch (e) {
+        console.warn('[userStore] persist 失败:', e.message)
+      }
+    },
+
     async syncFavorites(playlistStore) {
       if (!this.userInfo?.mid || !window.electronAPI) return 0
       this.isSyncingFavorites = true
@@ -377,7 +393,9 @@ export const useUserStore = defineStore('user', {
       }
 
       if (added > 0 && playlistStore && typeof playlistStore.savePlaylists === 'function') {
-        playlistStore.savePlaylists()
+        try { await playlistStore.savePlaylists() } catch (e) {
+          console.warn('[loadAllFavoriteResources] save failed:', e.message)
+        }
       }
       return added
     }

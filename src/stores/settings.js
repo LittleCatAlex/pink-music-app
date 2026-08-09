@@ -3,106 +3,77 @@ import { setTargetState as applyEQToEngine, EQ_PRESETS } from '@/utils/audioEQ'
 import { createPersistentStorage } from '@/utils/persistentStorage'
 import { s, defineSchema } from '@/utils/schema'
 
-// localStorage key：与项目其他 pink-music-* 命名风格保持一致（仅作 fallback）
-const VIS_KEY = 'pink-music-audio-visualizer-enabled'
-const VIS_INTENSITY_KEY = 'pink-music-audio-visualizer-intensity'
-const EQ_ENABLED_KEY = 'pink-music-audio-eq-enabled'
-const EQ_BANDS_KEY = 'pink-music-audio-eq-bands'
-const EQ_PRESET_KEY = 'pink-music-audio-eq-preset'
-const QUALITY_KEY = 'pink-music-audio-quality'
-const WIN_CTRL_KEY = 'pink-music-window-controls-enabled'
-
 const EQ_FLAT_BANDS = new Array(10).fill(0)
 
+// persist 串行链：确保并发 persist() 调用有序执行且读取最新 state
+let _persistChain = Promise.resolve()
+
 // ───────── Schema ─────────
-// v2 在 2.5.0 之后：新增 windowControlsEnabled
-// v1 → v2 不需要数据迁移，只是给老数据补一个默认值
+// Schema v4
 const settingsSchema = defineSchema({
-  version: 2,
+  version: 4,
   fields: {
-    audioQuality: s.enum(['auto', '64', '128', '192', '320', 'flac'], 'auto'),
+    audioQuality: s.enum(['auto', 'lossless', 'high', 'medium', 'low'], 'auto'),
     audioVisualizerEnabled: s.boolean(true),
     audioVisualizerIntensity: s.number(0, 1, 0.6),
     eqEnabled: s.boolean(true),
     eqBands: s.array(s.number(-12, 12, 0), 10),
     eqPreset: s.string('flat'),
-    windowControlsEnabled: s.boolean(true)
+    windowControlsEnabled: s.boolean(true),
+    lyricDisplayMode: s.enum(['original', 'romaji', 'translation'], 'original')
   },
   migrations: {
-    2: (data) => ({ ...data, windowControlsEnabled: data.windowControlsEnabled ?? true })
+    2: (data) => ({ ...data, windowControlsEnabled: data.windowControlsEnabled ?? true }),
+    3: (data) => ({ ...data, lyricDisplayMode: data.lyricDisplayMode ?? 'original' })
   }
 })
 
 // 主存储 key：settings
-const storage = createPersistentStorage('settings', { schema: settingsSchema, debounceMs: 300 })
-
-function readLocalEnabled() {
-  const raw = localStorage.getItem(VIS_KEY)
-  if (raw === null) return true
-  return raw === 'true'
-}
-function readLocalIntensity() {
-  const raw = localStorage.getItem(VIS_INTENSITY_KEY)
-  if (raw === null) return 0.6
-  const v = parseFloat(raw)
-  if (Number.isNaN(v)) return 0.6
-  return Math.max(0, Math.min(1, v))
-}
-function readLocalEQEnabled() {
-  const raw = localStorage.getItem(EQ_ENABLED_KEY)
-  if (raw === null) return true
-  return raw === 'true'
-}
-function readLocalEQBands() {
-  const raw = localStorage.getItem(EQ_BANDS_KEY)
-  if (!raw) return EQ_FLAT_BANDS.slice()
-  try {
-    const parsed = JSON.parse(raw)
-    if (Array.isArray(parsed) && parsed.length === 10) {
-      return parsed.map(v => {
-        const n = Number(v)
-        if (Number.isNaN(n)) return 0
-        return Math.max(-12, Math.min(12, n))
-      })
-    }
-  } catch (_) {}
-  return EQ_FLAT_BANDS.slice()
-}
-function readLocalEQPreset() {
-  return localStorage.getItem(EQ_PRESET_KEY) || 'flat'
-}
-function readLocalWindowControlsEnabled() {
-  const raw = localStorage.getItem(WIN_CTRL_KEY)
-  if (raw === null) return true
-  return raw === 'true'
-}
+// 注意：downloadDirectory 不在主存 schema 里 —— 它是纯 IPC 内存态，不落盘。
+// 所有 7 个字段都通过 createPersistentStorage 走主存 + localStorage 双写。
+const storage = createPersistentStorage('settings', { schema: settingsSchema, debounceMs: 0 })
 
 // 同步初值（localStorage peek，避免首屏闪）
-const peeked = storage.peek(null)
-const initialAudioVisualizerEnabled = peeked?.audioVisualizerEnabled ?? readLocalEnabled()
-const initialAudioVisualizerIntensity = peeked?.audioVisualizerIntensity ?? readLocalIntensity()
-const initialEqEnabled = peeked?.eqEnabled ?? readLocalEQEnabled()
-const initialEqBands = peeked?.eqBands ?? readLocalEQBands()
-const initialEqPreset = peeked?.eqPreset ?? readLocalEQPreset()
-const initialAudioQuality = peeked?.audioQuality ?? localStorage.getItem(QUALITY_KEY) ?? 'auto'
-const initialWindowControlsEnabled = peeked?.windowControlsEnabled ?? readLocalWindowControlsEnabled()
+// 7 个字段统一从 storage.peek() 拿，老 key 不再独立 peek —— storage 双写策略保证新 key 总是最新。
+// 兜底逻辑：peek 拿不到时用 schema 的 default（schema.parse 内部处理）
+const _peekedSettings = storage.peek(null) || {}
 
 // 启动期同步：把 EQ pending 状态先灌进 audioEQ，attachAudioAnalyser 时 initEQ 会自动应用
-applyEQToEngine(initialEqEnabled, initialEqBands)
+applyEQToEngine(
+  typeof _peekedSettings.eqEnabled === 'boolean' ? _peekedSettings.eqEnabled : true,
+  Array.isArray(_peekedSettings.eqBands) && _peekedSettings.eqBands.length === 10
+    ? _peekedSettings.eqBands
+    : EQ_FLAT_BANDS.slice()
+)
 
 export const useSettingsStore = defineStore('settings', {
   state: () => ({
     showSettings: false,
     activeSettingsTab: 'general',
+    // downloadDirectory：纯 IPC 内存态（不落盘），启动时由 loadDownloadDirectory() 拉主进程值填充
     downloadDirectory: '',
     cacheSize: 0,
-    audioQuality: initialAudioQuality,
-    audioVisualizerEnabled: initialAudioVisualizerEnabled,
-    audioVisualizerIntensity: initialAudioVisualizerIntensity,
-    eqEnabled: initialEqEnabled,
-    eqBands: initialEqBands,
-    eqPreset: initialEqPreset,
-    windowControlsEnabled: initialWindowControlsEnabled
+    // 非反应性字段：unsub 函数引用。Pinia state 里加这个只是为了能放在 store 上
+    // 方便其他 action / 组件访问；本身不会被外部 set。
+    _unsubDownloadDir: null,
+    audioQuality: _peekedSettings.audioQuality ?? 'auto',
+    audioVisualizerEnabled: typeof _peekedSettings.audioVisualizerEnabled === 'boolean'
+      ? _peekedSettings.audioVisualizerEnabled
+      : true,
+    audioVisualizerIntensity: typeof _peekedSettings.audioVisualizerIntensity === 'number'
+      ? _peekedSettings.audioVisualizerIntensity
+      : 0.6,
+    eqEnabled: typeof _peekedSettings.eqEnabled === 'boolean' ? _peekedSettings.eqEnabled : true,
+    eqBands: Array.isArray(_peekedSettings.eqBands) && _peekedSettings.eqBands.length === 10
+      ? _peekedSettings.eqBands.map(v => Number(v) || 0)
+      : EQ_FLAT_BANDS.slice(),
+    eqPreset: typeof _peekedSettings.eqPreset === 'string' ? _peekedSettings.eqPreset : 'flat',
+    windowControlsEnabled: typeof _peekedSettings.windowControlsEnabled === 'boolean'
+      ? _peekedSettings.windowControlsEnabled
+      : true,
+    lyricDisplayMode: typeof _peekedSettings.lyricDisplayMode === 'string'
+      ? _peekedSettings.lyricDisplayMode
+      : 'original'
   }),
   actions: {
     /**
@@ -119,6 +90,7 @@ export const useSettingsStore = defineStore('settings', {
         if (typeof data.eqPreset === 'string') this.eqPreset = data.eqPreset
         if (typeof data.audioQuality === 'string') this.audioQuality = data.audioQuality
         if (typeof data.windowControlsEnabled === 'boolean') this.windowControlsEnabled = data.windowControlsEnabled
+        if (typeof data.lyricDisplayMode === 'string') this.lyricDisplayMode = data.lyricDisplayMode
         applyEQToEngine(this.eqEnabled, this.eqBands)
       }
     },
@@ -128,30 +100,33 @@ export const useSettingsStore = defineStore('settings', {
     setDownloadDirectory(dir) { this.downloadDirectory = dir },
     setCacheSize(size) { this.cacheSize = size },
 
+    // 7 个 setter：所有写盘动作统一走 this.persist() → createPersistentStorage 主存 + localStorage 双写
+    // 老的 'pink-music-audio-*' localStorage 不再被 set；peek 阶段已不再读它们，schema 默认值兜底
     setAudioQuality(quality) {
       this.audioQuality = quality
-      try { localStorage.setItem(QUALITY_KEY, quality) } catch (_) {}
       this.persist()
     },
     setAudioVisualizerEnabled(enabled) {
       this.audioVisualizerEnabled = !!enabled
-      try { localStorage.setItem(VIS_KEY, this.audioVisualizerEnabled ? 'true' : 'false') } catch (_) {}
       this.persist()
     },
     setAudioVisualizerIntensity(value) {
       const v = Math.max(0, Math.min(1, Number(value) || 0))
       this.audioVisualizerIntensity = v
-      try { localStorage.setItem(VIS_INTENSITY_KEY, String(v)) } catch (_) {}
       this.persist()
     },
     setWindowControlsEnabled(enabled) {
       this.windowControlsEnabled = !!enabled
-      try { localStorage.setItem(WIN_CTRL_KEY, this.windowControlsEnabled ? 'true' : 'false') } catch (_) {}
       this.persist()
+    },
+    setLyricDisplayMode(mode) {
+      this.lyricDisplayMode = mode
+      this.persist()
+      // 派发自定义事件通知歌词组件重新加载
+      window.dispatchEvent(new CustomEvent('pink-music:lyric-mode-changed', { detail: mode }))
     },
     setEQEnabled(enabled) {
       this.eqEnabled = !!enabled
-      try { localStorage.setItem(EQ_ENABLED_KEY, this.eqEnabled ? 'true' : 'false') } catch (_) {}
       applyEQToEngine(this.eqEnabled, this.eqBands)
       this.persist()
     },
@@ -161,7 +136,6 @@ export const useSettingsStore = defineStore('settings', {
       const next = this.eqBands.slice()
       next[i] = v
       this.eqBands = next
-      try { localStorage.setItem(EQ_BANDS_KEY, JSON.stringify(next)) } catch (_) {}
       applyEQToEngine(this.eqEnabled, this.eqBands)
       this.persist()
     },
@@ -170,8 +144,6 @@ export const useSettingsStore = defineStore('settings', {
       if (!bands) return
       this.eqPreset = presetKey
       this.eqBands = bands.slice()
-      try { localStorage.setItem(EQ_PRESET_KEY, presetKey) } catch (_) {}
-      try { localStorage.setItem(EQ_BANDS_KEY, JSON.stringify(bands)) } catch (_) {}
       applyEQToEngine(this.eqEnabled, this.eqBands)
       this.persist()
     },
@@ -183,7 +155,6 @@ export const useSettingsStore = defineStore('settings', {
         return Math.max(-12, Math.min(12, n))
       })
       this.eqBands = next
-      try { localStorage.setItem(EQ_BANDS_KEY, JSON.stringify(next)) } catch (_) {}
       applyEQToEngine(this.eqEnabled, this.eqBands)
       this.persist()
     },
@@ -191,26 +162,32 @@ export const useSettingsStore = defineStore('settings', {
       this.eqEnabled = true
       this.eqPreset = 'flat'
       this.eqBands = EQ_FLAT_BANDS.slice()
-      try { localStorage.setItem(EQ_ENABLED_KEY, 'true') } catch (_) {}
-      try { localStorage.setItem(EQ_PRESET_KEY, 'flat') } catch (_) {}
-      try { localStorage.setItem(EQ_BANDS_KEY, JSON.stringify(EQ_FLAT_BANDS)) } catch (_) {}
       applyEQToEngine(true, this.eqBands)
       this.persist()
     },
 
     /** 内部：把当前关键 state 写入主存储（双写） */
     async persist() {
-      await storage.save({
-        audioQuality: this.audioQuality,
-        audioVisualizerEnabled: this.audioVisualizerEnabled,
-        audioVisualizerIntensity: this.audioVisualizerIntensity,
-        eqEnabled: this.eqEnabled,
-        eqBands: this.eqBands,
-        eqPreset: this.eqPreset,
-        windowControlsEnabled: this.windowControlsEnabled
+      _persistChain = _persistChain.then(async () => {
+        await storage.save({
+          audioQuality: this.audioQuality,
+          audioVisualizerEnabled: this.audioVisualizerEnabled,
+          audioVisualizerIntensity: this.audioVisualizerIntensity,
+          eqEnabled: this.eqEnabled,
+          eqBands: this.eqBands,
+          eqPreset: this.eqPreset,
+          windowControlsEnabled: this.windowControlsEnabled,
+          lyricDisplayMode: this.lyricDisplayMode
+        })
       })
+      return _persistChain
     },
 
+    // ============== 下载目录：纯 IPC 内存态 ==============
+    // 主进程持有 currentDownloadDir 内存变量；渲染层 store 仅镜像。
+    // loadDownloadDirectory：启动时拉一次
+    // selectDownloadDirectory：用户选完目录后调
+    // registerDownloadDirListener：注册推送监听，主进程变更时同步
     async loadDownloadDirectory() {
       if (window.electronAPI) {
         const result = await window.electronAPI.getDownloadDirectory()
@@ -223,6 +200,20 @@ export const useSettingsStore = defineStore('settings', {
         if (result?.code === 0) this.downloadDirectory = result.path
       }
     },
+    registerDownloadDirListener() {
+      if (!window.electronAPI?.onDownloadDirChanged) return
+      if (this._unsubDownloadDir) return  // 已注册过，避免重复
+      this._unsubDownloadDir = window.electronAPI.onDownloadDirChanged((dir) => {
+        this.downloadDirectory = dir
+      })
+    },
+    unregisterDownloadDirListener() {
+      if (this._unsubDownloadDir) {
+        try { this._unsubDownloadDir() } catch (_) {}
+        this._unsubDownloadDir = null
+      }
+    },
+
     async loadCacheSize() {
       if (window.electronAPI) {
         const result = await window.electronAPI.getCacheSize()

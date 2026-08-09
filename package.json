@@ -1,7 +1,7 @@
 {
   "name": "PinkMusic",
   "private": true,
-  "version": "2.4.0",
+  "version": "2.5.0",
   "main": "electron/main.js",
   "scripts": {
     "dev": "vite",
@@ -13,7 +13,10 @@
     "electron:build:win:x64": "npm run build && electron-builder --win --x64",
     "electron:build:win:arm64": "npm run build && electron-builder --win --arm64",
     "electron:build:win:all": "npm run build && electron-builder --win --x64 --arm64",
-    "electron:build:all": "npm run build && electron-builder -mw"
+    "electron:build:all": "npm run build && electron-builder -mw",
+    "test:storage": "node scripts/test-persistent-storage.js",
+    "test:playlist": "node scripts/test-playlist-migration.js",
+    "test": "npm run test:storage && npm run test:playlist"
   },
   "dependencies": {
     "axios": "^1.15.2",

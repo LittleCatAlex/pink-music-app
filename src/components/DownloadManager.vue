@@ -123,7 +123,7 @@ async function clearTasks() {
   left: 0;
   width: 100%;
   height: 100%;
-  background: rgba(0, 0, 0, 0.6);
+  background: var(--bg-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -251,7 +251,7 @@ async function clearTasks() {
 .quality-badge {
   padding: 2px 6px;
   background: var(--primary-color);
-  color: white;
+  color: var(--text-primary);
   border-radius: 4px;
   font-size: 11px;
 }
@@ -269,13 +269,13 @@ async function clearTasks() {
 
 .codec-badge.flac {
   background: linear-gradient(135deg, #ff6b9d 0%, #c06c84 100%);
-  color: #fff;
+  color: var(--text-primary);
   border-color: transparent;
 }
 
 .codec-badge.dolby {
   background: linear-gradient(135deg, #00d2ff 0%, #3a7bd5 100%);
-  color: #fff;
+  color: var(--text-primary);
   border-color: transparent;
 }
 
@@ -291,11 +291,11 @@ async function clearTasks() {
 }
 
 .status-text.completed {
-  color: #4caf50;
+  color: var(--success-color);
 }
 
 .status-text.error {
-  color: #e81123;
+  color: var(--error-color);
 }
 
 .status-text.downloading {
@@ -337,6 +337,6 @@ async function clearTasks() {
 .download-item-error {
   margin-top: 8px;
   font-size: 12px;
-  color: #e81123;
+  color: var(--error-color);
 }
 </style>

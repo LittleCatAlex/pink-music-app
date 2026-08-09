@@ -27,12 +27,14 @@ function createPlaylist() {
   newPlaylistName.value = ''
 }
 
-function confirmCreatePlaylist() {
+async function confirmCreatePlaylist() {
   const name = newPlaylistName.value.trim()
   if (!name) return
   // 用 store 的统一 createPlaylist，id 走稳定生成器（Date.now+random），避免快速连点冲突
   playlistStore.createPlaylist(name)
-  playlistStore.savePlaylists()
+  try { await playlistStore.savePlaylists() } catch (e) {
+    console.warn('[sidebar createPlaylist] save failed:', e.message)
+  }
   playlistStore.setShowCreatePlaylistModal(false)
 }
 
@@ -61,16 +63,22 @@ function importPlaylist() {
     const file = e.target.files[0]
     if (!file) return
     const reader = new FileReader()
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       try {
         const imported = JSON.parse(event.target.result)
         if (imported.name && Array.isArray(imported.music)) {
           // 用统一 createPlaylist，id 走稳定生成器
-          playlistStore.createPlaylist(imported.name, {
+          const pl = playlistStore.createPlaylist(imported.name, {
             cover: imported.cover || '',
             music: imported.music
           })
-          playlistStore.savePlaylists()
+          // 封面始终跟随第一首音乐
+          if (pl.cover !== (pl.music[0]?.cover || '')) {
+            pl.cover = pl.music[0]?.cover || ''
+          }
+          try { await playlistStore.savePlaylists() } catch (e) {
+            console.warn('[sidebar importPlaylist] save failed:', e.message)
+          }
         }
       } catch (error) {
         console.error('导入歌单失败:', error)
@@ -87,7 +95,7 @@ function openDownloadFolder() {
   }
 }
 
-function deletePlaylist(playlist) {
+async function deletePlaylist(playlist) {
   if (!playlist || playlist.isDefault) return
   const songCount = playlist.music?.length || playlist.media_count || 0
   // B 站同步的收藏夹删的是本地副本，B 站云端不受影响——文案上明确告知
@@ -101,7 +109,9 @@ function deletePlaylist(playlist) {
     cancelText: '取消'
   })
   if (!ok) return
-  playlistStore.deletePlaylist(playlist.id)
+  try { await playlistStore.deletePlaylist(playlist.id) } catch (e) {
+    console.warn('[sidebar delete] failed:', e.message)
+  }
   // 通知父组件（App.vue）兜底处理「如果删的是当前正在查看的歌单则跳回列表」
   // 侧边栏自己拿不到 currentPlaylist 的实时值，交给 App.vue 统一管理
   window.dispatchEvent(new CustomEvent('pink-music:playlist-deleted', { detail: { id: playlist.id } }))

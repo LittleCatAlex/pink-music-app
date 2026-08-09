@@ -49,7 +49,7 @@ function addToPlaylist(playlist) {
     <div class="player-controls">
       <div class="control-buttons">
         <button @click="playerStore.togglePlayMode()" class="control-btn mode-btn" :class="{ active: playerStore.playMode !== 'order' }" :title="playerStore.getPlayModeLabel()">
-          <span class="mode-icon">{{ playerStore.getPlayModeIcon() }}</span>
+          <span class="mode-icon" v-html="playerStore.getPlayModeIcon()"></span>
         </button>
         <button @click="playPrevious" class="control-btn">
           <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
@@ -80,6 +80,7 @@ function addToPlaylist(playlist) {
           />
           <div class="progress-bar">
             <div class="progress-fill" :style="{ width: (playerStore.duration > 0 ? (playerStore.currentTime / playerStore.duration) * 100 : 0) + '%' }"></div>
+            <div class="buffered-fill" :style="{ width: playerStore.bufferedProgress + '%' }"></div>
           </div>
         </div>
         <span class="progress-time">{{ parseDuration(playerStore.duration) }}</span>

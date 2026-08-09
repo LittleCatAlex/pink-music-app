@@ -14,6 +14,7 @@ import DownloadManager from './components/DownloadManager.vue'
 import LoginPanel from './components/LoginPanel.vue'
 import { applyLiquidGlass, destroyLiquidGlass } from './composables/useLiquidGlass'
 import { appConfirm } from './utils/confirm'
+import { flushPendingLocalWrites } from './utils/persistentStorage'
 
 // flush 协议相关：保存 IPC 监听器反注册函数，HMR 时清理旧监听器，避免重复注册
 let unregisterFlushListener = null
@@ -102,6 +103,7 @@ const searchQuery = ref('')
 const isSearching = ref(false)
 const searchResults = ref([])
 const isLoadingSearch = ref(false)
+const lastSearchQuery = ref('')
 const recommendedMusic = ref([])
 const isLoadingRecommended = ref(false)
 const currentPlaylist = computed({
@@ -119,7 +121,6 @@ const coverBgUrl = computed(() => {
   return raw || 'https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=1200'
 })
 const isPlaying = ref(false)
-const showPlayerPage = ref(false)
 const audioElement = ref(null)
 const currentTime = ref(0)
 const duration = ref(0)
@@ -131,6 +132,10 @@ const audioError = ref('')
 const bufferedProgress = ref(0)
 const showCreatePlaylistModal = ref(false)
 const newPlaylistName = ref('')
+// 重命名歌单弹窗状态
+const showRenameModal = ref(false)
+const renamePlaylistTarget = ref(null)
+const renameValue = ref('')
 const currentSeries = ref(null)
 const showSeriesPanel = ref(false)
 const downloadProgress = ref(0)
@@ -151,18 +156,28 @@ const showLyricPanel = ref(true)
 // 批量管理歌单内歌曲：多选模式 + 已选 key 集合（key 同模板 :key）
 const isTrackBatchMode = ref(false)
 const selectedTrackKeys = ref(new Set())
+const showBatchAddToPlaylistModal = ref(false)
+
+// 主页/搜索页多分P视频添加：一体式弹窗（勾选分P + 选择目标歌单）
+const showAddPModal = ref(false)
+const pendingAddMusic = ref(null)
+const pendingEpisodes = ref([])
+const selectedPKeys = ref(new Set())
+const isLoadingPList = ref(false)
+// 单曲添加弹窗的目标 music（null 时回退到 currentTrack）
+const addToPlaylistTarget = ref(null)
+// 创建歌单成功后把分P加入新歌单（null=不加入；'all'=全部P；'selected'=已勾选P）
+const createPlaylistForP = ref(null)
 
 // 设置功能状态 - 已迁移到 MineView，不再需要
 const showLoginPanel = ref(false)
 
 // 点击播放栏封面打开大屏播放
 function openPlayerPageFromCover() {
-  showPlayerPage.value = true
   playerStore.setShowPlayerPage(true)
 }
 
 function closePlayerPage() {
-  showPlayerPage.value = false
   playerStore.setShowPlayerPage(false)
 }
 
@@ -433,7 +448,11 @@ async function confirmBatchDeletePlaylists() {
       deletedIds.push(p.id)
       return false
     })
-    if (deletedIds.length > 0) playlistStore.savePlaylists()
+    if (deletedIds.length > 0) {
+      try { await playlistStore.savePlaylists() } catch (e) {
+        console.warn('[batchDelete] save failed:', e.message)
+      }
+    }
     const result = { deleted: deletedIds.length, skipped, deletedIds }
     console.log('[BatchDelete] result =', result, 'userPlaylists now =', playlistStore.userPlaylists.map(p => p.id))
     // 如果当前正在查看的歌单被删了，跳回列表
@@ -551,7 +570,10 @@ async function confirmDeleteTrack(music) {
       ...playlistStore.userPlaylists[pIdx],
       music: [...list]
     }
-    playlistStore.savePlaylists()
+    syncPlaylistCover(playlistStore.userPlaylists[pIdx])
+    try { await playlistStore.savePlaylists() } catch (e) {
+      console.warn('[deleteTrack] save failed:', e.message)
+    }
     // 刷新 currentPlaylist 引用，触发视图更新
     playlistStore.setCurrentPlaylist(playlistStore.userPlaylists[pIdx])
   }
@@ -602,7 +624,10 @@ async function confirmBatchDeleteTracks() {
         ...playlistStore.userPlaylists[pIdx],
         music: newList
       }
-      playlistStore.savePlaylists()
+      syncPlaylistCover(playlistStore.userPlaylists[pIdx])
+      try { await playlistStore.savePlaylists() } catch (e) {
+        console.warn('[batchDeleteTracks] save failed:', e.message)
+      }
       // 刷新 currentPlaylist 引用
       playlistStore.setCurrentPlaylist(playlistStore.userPlaylists[pIdx])
     }
@@ -620,6 +645,179 @@ watch(currentPlaylist, () => {
     exitTrackBatchMode()
   }
 })
+
+/**
+ * 批量添加到其它歌单：
+ * - 打开"添加到歌单"弹窗，歌单列表排除当前歌单自身
+ * - 添加成功后保留批量模式与勾选，可连续添加到多个歌单
+ */
+function openBatchAddToPlaylist() {
+  if (selectedTrackKeys.value.size === 0) return
+  const pl = currentPlaylist.value
+  if (!pl || !pl.music || pl.music.length === 0) return
+  showBatchAddToPlaylistModal.value = true
+}
+
+function isCurrentPlaylist(playlist) {
+  return playlist && currentPlaylist.value && playlist.id === currentPlaylist.value.id
+}
+
+/**
+ * 批量把歌曲写入目标歌单（共享逻辑）：
+ * - 去重规则：bvid+cid 同时匹配才判重（与 store addToPlaylist 一致）
+ * - 通过 userPlaylists 整体替换数组引用触发响应式，然后持久化
+ * - 逻辑直接在 UI 组件里执行，避开 Pinia store action HMR 不热更的坑
+ * @param {Array} tracks 要添加的歌曲数组（会浅拷贝）
+ * @param {object} playlist 目标歌单
+ * @returns {Promise<{added: number, skipped: number}>}
+ */
+async function pushTracksToPlaylist(tracks, playlist) {
+  const list = Array.isArray(tracks) ? tracks : []
+  if (list.length === 0 || !playlist) return { added: 0, skipped: 0 }
+  const targetMusic = Array.isArray(playlist.music) ? [...playlist.music] : []
+  const existingKeys = new Set(targetMusic.map(m => (m.bvid ?? '') + ':' + (m.cid ?? '')))
+  let addedCount = 0
+  for (const music of list) {
+    const k = (music.bvid ?? '') + ':' + (music.cid ?? '')
+    if (!existingKeys.has(k)) {
+      existingKeys.add(k)
+      targetMusic.push({ ...music })
+      addedCount++
+    }
+  }
+  const skippedCount = list.length - addedCount
+  if (addedCount > 0) {
+    const pIdx = playlistStore.userPlaylists.findIndex(p => p.id === playlist.id)
+    if (pIdx >= 0) {
+      playlistStore.userPlaylists[pIdx] = {
+        ...playlistStore.userPlaylists[pIdx],
+        music: targetMusic
+      }
+      syncPlaylistCover(playlistStore.userPlaylists[pIdx])
+      try {
+        await playlistStore.savePlaylists()
+      } catch (e) {
+        console.warn('[pushTracksToPlaylist] save failed:', e.message)
+      }
+      console.log(`[pushTracksToPlaylist] ✅ 添加到「${playlist.name}」 ${addedCount} 首，跳过重复 ${skippedCount} 首`)
+    } else {
+      return { added: 0, skipped: skippedCount }
+    }
+  } else {
+    console.log(`[pushTracksToPlaylist] 所选歌曲已全部存在于「${playlist.name}」，无新增`)
+  }
+  return { added: addedCount, skipped: skippedCount }
+}
+
+/**
+ * 批量添加到目标歌单：
+ * - 保留批量模式与勾选，用户可继续添加到其它歌单
+ */
+async function batchAddToPlaylist(playlist) {
+  const pl = currentPlaylist.value
+  if (!pl || !playlist || playlist.id === pl.id) return
+  const keys = new Set(selectedTrackKeys.value)
+  const matched = pl.music.filter((m, i) => keys.has(getTrackKey(m, i)))
+  if (matched.length === 0) {
+    showBatchAddToPlaylistModal.value = false
+    return
+  }
+  await pushTracksToPlaylist(matched, playlist)
+  showBatchAddToPlaylistModal.value = false
+}
+
+/**
+ * 构造分P对应的 music 对象：继承整稿信息，写入 cid / part 标题 / 分P时长 / 分P封面
+ */
+function buildEpisodeMusic(episode, source) {
+  if (!episode || !source) return null
+  return {
+    ...source,
+    cid: episode.cid,
+    title: episode.part || source.title,
+    duration: episode.duration || source.duration,
+    cover: fixCoverUrl(episode.first_frame) || source.cover
+  }
+}
+
+/**
+ * 主页/搜索页卡片"+"入口：
+ * - 单P视频或接口失败 → 走单曲添加到歌单弹窗
+ * - 多P视频 → 打开一体式分P选择弹窗
+ */
+async function openAddPSelect(music) {
+  if (!music || !music.bvid) return
+  isLoadingPList.value = true
+  try {
+    let episodes = []
+    if (window.electronAPI) {
+      const res = await window.electronAPI.getVideoEpisodes(music.bvid)
+      if (res.code === 0 && Array.isArray(res.data) && res.data.length > 1) {
+        episodes = res.data
+      }
+    }
+    if (episodes.length <= 1) {
+      openAddToPlaylistModal(music)
+      return
+    }
+    pendingAddMusic.value = music
+    pendingEpisodes.value = episodes
+    selectedPKeys.value = new Set()
+    showAddPModal.value = true
+  } catch (e) {
+    console.warn('[openAddPSelect] 获取分P列表失败:', e.message)
+    openAddToPlaylistModal(music)
+  } finally {
+    isLoadingPList.value = false
+  }
+}
+
+function togglePSelection(cid) {
+  const next = new Set(selectedPKeys.value)
+  if (next.has(cid)) next.delete(cid)
+  else next.add(cid)
+  selectedPKeys.value = next
+}
+
+function selectAllPs() {
+  const next = new Set()
+  pendingEpisodes.value.forEach(e => next.add(e.cid))
+  selectedPKeys.value = next
+}
+
+function isAllPsSelected() {
+  const list = pendingEpisodes.value
+  if (list.length === 0) return false
+  return list.every(e => selectedPKeys.value.has(e.cid))
+}
+
+/**
+ * 把已勾选的分P加入目标歌单
+ */
+async function addSelectedPsToPlaylist(playlist) {
+  const source = pendingAddMusic.value
+  const list = pendingEpisodes.value
+  if (!source || !playlist || list.length === 0) return
+  const keys = new Set(selectedPKeys.value)
+  const tracks = list
+    .filter(e => keys.has(e.cid))
+    .map(e => buildEpisodeMusic(e, source))
+    .filter(Boolean)
+  if (tracks.length === 0) return
+  await pushTracksToPlaylist(tracks, playlist)
+  showAddPModal.value = false
+}
+
+/**
+ * 打开创建歌单弹窗，确认后把分P加入新歌单
+ * @param {'all'|'selected'} mode 全部P 或 已勾选P
+ */
+function createPlaylistWithPs(mode) {
+  if (!pendingAddMusic.value) return
+  createPlaylistForP.value = mode
+  newPlaylistName.value = pendingAddMusic.value.title || ''
+  showCreatePlaylistModal.value = true
+}
 
 async function loadRecommendedMusic() {
   isLoadingRecommended.value = true
@@ -679,6 +877,9 @@ async function loadRecommendedMusic() {
 
 async function handleSearch() {
   if (!searchQuery.value.trim()) return
+  // 防重复提交：相同关键词在搜索中不重复触发
+  if (isSearching.value && searchQuery.value === lastSearchQuery.value) return
+  lastSearchQuery.value = searchQuery.value
   isSearching.value = true
   isLoadingSearch.value = true
   currentView.value = 'search'
@@ -707,7 +908,8 @@ async function handleSearch() {
           cover: fixCoverUrl(item.pic),
           duration: typeof item.duration === 'string' ? parseDuration(item.duration) : item.duration || 180,
           playCount: item.play || 0,
-          pubdate: item.pubdate
+          pubdate: item.pubdate,
+          videos: item.videos || 0
         }))
       } else {
         searchResults.value = []
@@ -720,6 +922,7 @@ async function handleSearch() {
     searchResults.value = []
   } finally {
     isLoadingSearch.value = false
+    lastSearchQuery.value = ''
   }
 }
 
@@ -834,7 +1037,7 @@ async function playMusic(music) {
       // 通过 electronAPI 获取视频播放地址
       let playUrlResult
       if (window.electronAPI) {
-        playUrlResult = await window.electronAPI.getMusicPlayUrl(music.bvid, music.cid || musicInfo.cid)
+        playUrlResult = await window.electronAPI.getMusicPlayUrl(music.bvid, music.cid ?? musicInfo.cid)
       }
 
       if (playUrlResult?.code === 0) {
@@ -1263,36 +1466,105 @@ function createPlaylist() {
   newPlaylistName.value = ''
 }
 
-function confirmCreatePlaylist() {
+async function confirmCreatePlaylist() {
   const name = newPlaylistName.value.trim()
   if (!name) return
   // 用 store 的统一 createPlaylist，id 走稳定生成器（Date.now+random），避免快速连点冲突
   const pl = playlistStore.createPlaylist(name)
-  playlistStore.savePlaylists()
+  try { await playlistStore.savePlaylists() } catch (e) {
+    console.warn('[createPlaylist] save failed:', e.message)
+  }
+  // 创建歌单后把分P加入新歌单（主页/搜索页多P添加流程）
+  if (createPlaylistForP.value && pendingAddMusic.value) {
+    const mode = createPlaylistForP.value
+    createPlaylistForP.value = null
+    const list = pendingEpisodes.value
+    const source = pendingAddMusic.value
+    let tracks = []
+    if (mode === 'all') {
+      tracks = list.map(e => buildEpisodeMusic(e, source)).filter(Boolean)
+    } else {
+      const keys = new Set(selectedPKeys.value)
+      tracks = list.filter(e => keys.has(e.cid)).map(e => buildEpisodeMusic(e, source)).filter(Boolean)
+    }
+    await pushTracksToPlaylist(tracks, pl)
+    showAddPModal.value = false
+  }
   showCreatePlaylistModal.value = false
 }
 
 function cancelCreatePlaylist() {
   showCreatePlaylistModal.value = false
+  createPlaylistForP.value = null
   newPlaylistName.value = ''
 }
 
-function openAddToPlaylistModal() {
-  if (!currentTrack.value) return
+/**
+ * 歌单封面始终跟随第一首音乐：
+ * - 本地歌单（含默认收藏夹）用 music[0] 的封面，无音乐时清空（UI 自动回退占位图）
+ * - B 站收藏夹（isBiliFavorite）封面来自 B 站云端元数据，不覆盖
+ * @param {object} playlist
+ */
+function syncPlaylistCover(playlist) {
+  if (!playlist || playlist.isBiliFavorite) return
+  const firstCover = playlist.music?.[0]?.cover || ''
+  if (playlist.cover !== firstCover) {
+    playlist.cover = firstCover
+  }
+}
+
+// ============= 重命名歌单 =============
+function openRenamePlaylist(playlist) {
+  if (!playlist || playlist.isDefault) return
+  renamePlaylistTarget.value = playlist
+  renameValue.value = playlist.name || ''
+  showRenameModal.value = true
+}
+
+async function confirmRenamePlaylist() {
+  const name = renameValue.value.trim()
+  const playlist = renamePlaylistTarget.value
+  if (!name || !playlist) return
+  playlist.name = name
+  try { await playlistStore.savePlaylists() } catch (e) {
+    console.warn('[renamePlaylist] save failed:', e.message)
+  }
+  showRenameModal.value = false
+  renamePlaylistTarget.value = null
+  renameValue.value = ''
+}
+
+function cancelRenamePlaylist() {
+  showRenameModal.value = false
+  renamePlaylistTarget.value = null
+  renameValue.value = ''
+}
+
+function openAddToPlaylistModal(music) {
+  if (!music) {
+    if (!currentTrack.value) return
+    addToPlaylistTarget.value = null
+  } else {
+    addToPlaylistTarget.value = music
+  }
   showAddToPlaylistModal.value = true
 }
 
-function addToPlaylist(playlist) {
-  if (!currentTrack.value || !playlist) return
-  const music = { ...currentTrack.value }
+async function addToPlaylist(playlist) {
+  const music = addToPlaylistTarget.value || currentTrack.value
+  if (!music || !playlist) return
   if (!playlist.music) {
     playlist.music = []
   }
   const exists = playlist.music.some(m => m.bvid === music.bvid && m.cid === music.cid)
   if (!exists) {
-    playlist.music.push(music)
-    playlistStore.savePlaylists()
+    playlist.music.push({ ...music })
+    syncPlaylistCover(playlist)
+    try { await playlistStore.savePlaylists() } catch (e) {
+      console.warn('[addToPlaylist] save failed:', e.message)
+    }
   }
+  addToPlaylistTarget.value = null
   showAddToPlaylistModal.value = false
 }
 
@@ -1301,13 +1573,13 @@ async function downloadMusic(music) {
     isAudioLoading.value = true
 
     let musicInfoResult
-    if (!music.cid) {
+    if (music.cid == null) {
       musicInfoResult = await window.electronAPI.getMusicInfo(music.bvid)
       if (musicInfoResult.code !== 0) {
         throw new Error('获取音乐信息失败')
       }
     }
-    const cid = music.cid || musicInfoResult?.data?.cid
+    const cid = music.cid ?? musicInfoResult?.data?.cid
 
     const playUrlResult = await window.electronAPI.getMusicPlayUrl(music.bvid, cid)
     if (playUrlResult.code !== 0) {
@@ -1418,7 +1690,7 @@ function importPlaylist() {
     const file = e.target.files[0]
     if (!file) return
     const reader = new FileReader()
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       try {
         const imported = JSON.parse(event.target.result)
         if (imported.name && Array.isArray(imported.music)) {
@@ -1427,7 +1699,10 @@ function importPlaylist() {
             cover: imported.cover || '',
             music: imported.music
           })
-          playlistStore.savePlaylists()
+          syncPlaylistCover(pl)
+          try { await playlistStore.savePlaylists() } catch (e) {
+            console.warn('[importPlaylist] save failed:', e.message)
+          }
         }
       } catch (error) {
         console.error('导入歌单失败:', error)
@@ -1437,10 +1712,6 @@ function importPlaylist() {
   }
   input.click()
 }
-
-watch(showPlayerPage, (newVal) => {
-  // CSS 动画现在由 .player-page.active 类自动控制
-})
 
 // 实时同步播放器栏显隐状态到 document 属性，让 dock / main-content 立即响应
 function syncPlayerState(track) {
@@ -1532,6 +1803,56 @@ function handleMenuCommand(command) {
     case 'open-settings':
       openSettings()
       break
+    case 'go-mine':
+      // 切到"我的"视图（MineView 在 currentView === 'mine' 时挂载）
+      playlistStore.setCurrentView('mine')
+      break
+    case 'toggle-player-page':
+      // 全屏播放器显隐：有 currentTrack 时才进，无曲不响应
+      if (playerStore.showPlayerPage) {
+        playerStore.setShowPlayerPage(false)
+      } else if (playerStore.currentTrack) {
+        playerStore.setShowPlayerPage(true)
+      }
+      break
+    case 'next-episode':
+      // 跳到当前视频的下一个分P（仅在有分P时生效；shuffle 模式随机取一个不同的分P）
+      if (currentTrack.value && currentVideoEpisodes.value.length > 0) {
+        let nextEpisodeIndex
+        if (playMode.value === 'shuffle') {
+          do {
+            nextEpisodeIndex = getRandomIndex(currentVideoEpisodes.value.length)
+          } while (
+            currentVideoEpisodes.value.length > 1 &&
+            nextEpisodeIndex === currentEpisodeIndex.value
+          )
+        } else {
+          nextEpisodeIndex = (currentEpisodeIndex.value + 1) % currentVideoEpisodes.value.length
+        }
+        const nextEp = currentVideoEpisodes.value[nextEpisodeIndex]
+        if (nextEp) playEpisode(nextEp)
+      }
+      break
+    case 'previous-episode':
+      // 跳到当前视频的上一个分P（仅在有分P时生效；shuffle 模式随机取一个不同的分P）
+      if (currentTrack.value && currentVideoEpisodes.value.length > 0) {
+        let prevEpisodeIndex
+        if (playMode.value === 'shuffle') {
+          do {
+            prevEpisodeIndex = getRandomIndex(currentVideoEpisodes.value.length)
+          } while (
+            currentVideoEpisodes.value.length > 1 &&
+            prevEpisodeIndex === currentEpisodeIndex.value
+          )
+        } else {
+          prevEpisodeIndex = currentEpisodeIndex.value > 0
+            ? currentEpisodeIndex.value - 1
+            : currentVideoEpisodes.value.length - 1
+        }
+        const prevEp = currentVideoEpisodes.value[prevEpisodeIndex]
+        if (prevEp) playEpisode(prevEp)
+      }
+      break
     default:
       console.warn('[MenuCommand] 未知菜单命令:', command.action)
   }
@@ -1556,6 +1877,9 @@ onMounted(async () => {
   setupMediaSessionHandlers()
   downloadStore.loadTasks()
   downloadStore.registerProgressListener()
+  // 下载目录：纯 IPC 内存态，先注册主进程推送监听再拉一次初值
+  settingsStore.registerDownloadDirListener()
+  settingsStore.loadDownloadDirectory()
   window.addEventListener('pink-music:play-track', handlePinkMusicEvent)
   window.addEventListener('pink-music:open-download', handlePinkMusicEvent)
   window.addEventListener('pink-music:open-login', handlePinkMusicEvent)
@@ -1600,22 +1924,30 @@ onMounted(async () => {
     const flushHandler = async () => {
       try {
         console.log('[App] 收到 flush 请求，开始同步所有 store')
-        // 歌单最重要，先 flush
+        // 先 await 一个微任务，让所有"刚同步触发的 save"先进 store 内部的 _pendingSave 队列
+        await Promise.resolve()
+        // 歌单最重要，先 flush（含 localStorage 同步写 + 主存 IPC）
         await playlistStore.flush(2500)
         // 其他 store 也强制 flush：先同步写 localStorage（writeLocalJsonNow 走
         // 同步写，不依赖 debounce 队列），再发主存储 IPC。
         // 这样能在关窗口的 3s 死线前确保 localStorage 一定落盘，主存储 IPC 已经发出。
         const flushTasks = []
-        try { flushTasks.push(themeStore.persist?.() ?? themeStore.save?.()) } catch (_) {}
-        try { flushTasks.push(settingsStore.persist?.() ?? settingsStore.save?.()) } catch (_) {}
-        try { flushTasks.push(playerStore.saveHistory?.()) } catch (_) {}
-        try { flushTasks.push(lyricStore.persist?.() ?? lyricStore.save?.()) } catch (_) {}
-        try { flushTasks.push(userStore.persist?.() ?? userStore.save?.()) } catch (_) {}
-        await Promise.allSettled(flushTasks)
-        console.log('[App] flush 完毕，通知主进程')
+        try { flushTasks.push(themeStore.persist?.() ?? themeStore.save?.()) } catch (e) { console.warn('[flush] theme:', e.message) }
+        try { flushTasks.push(settingsStore.persist?.() ?? settingsStore.save?.()) } catch (e) { console.warn('[flush] settings:', e.message) }
+        // 先 flush pending 的 debounced save（如果有 timer 在等，立即触发；没有则 no-op）
+        try { await playerStore.flushPendingHistorySave?.() } catch (e) { console.warn('[flush] pending history:', e.message) }
+        // 再补一次显式 persist，确保关窗前最新快照落盘
+        try { flushTasks.push(playerStore.savePlayHistory?.()) } catch (e) { console.warn('[flush] player:', e.message) }
+        try { flushTasks.push(lyricStore.persist?.() ?? lyricStore.save?.()) } catch (e) { console.warn('[flush] lyric:', e.message) }
+        try { flushTasks.push(userStore.persist?.() ?? userStore.save?.()) } catch (e) { console.warn('[flush] user:', e.message) }
+        const results = await Promise.allSettled(flushTasks)
+        const failed = results.filter(r => r.status === 'rejected').length
+        console.log(`[App] flush 完毕（${results.length - failed} 成功 / ${failed} 失败），通知主进程`)
       } catch (e) {
         console.error('[App] flush 异常:', e.message)
       } finally {
+        // 刷新所有防抖的 localStorage 写，确保双写一致
+        try { flushPendingLocalWrites() } catch (_) {}
         // 无论成功失败都告诉主进程可以退出了（3s 超时保护）
         try { window.electronAPI?.notifyFlushDone?.() } catch (_) {}
       }
@@ -1644,6 +1976,8 @@ onUnmounted(() => {
     try { unregisterFlushListener() } catch (_) {}
     unregisterFlushListener = null
   }
+  // 注销下载目录变更监听
+  settingsStore.unregisterDownloadDirListener()
   if (window[HMR_FLUSH_KEY]) {
     window[HMR_FLUSH_KEY] = null
   }
@@ -1754,6 +2088,9 @@ onUnmounted(() => {
                   <button class="download-button" @click.stop="downloadMusic(music)" title="下载">
                     <svg viewBox="0 0 24 24" fill="white" width="18" height="18"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
                   </button>
+                  <button class="p-add-btn" @click.stop="openAddPSelect(music)" title="添加到歌单">
+                    <svg viewBox="0 0 24 24" fill="white" width="18" height="18"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+                  </button>
                 </div>
               </div>
               <h4 class="card-title">{{ music.title }}</h4>
@@ -1787,10 +2124,10 @@ onUnmounted(() => {
           <div class="loading-spinner"></div>
           <p>搜索中...</p>
         </div>
-        <div v-else-if="isSearching && searchResults.length === 0" class="loading">
+        <div v-else-if="currentView === 'search' && searchResults.length === 0" class="loading">
           <p>未找到相关音乐</p>
         </div>
-        <div v-else-if="isSearching" class="card-grid">
+        <div v-else-if="currentView === 'search'" class="card-grid">
           <div
             v-for="(music, index) in searchResults"
             :key="music.bvid"
@@ -1800,12 +2137,16 @@ onUnmounted(() => {
           >
             <div class="card-cover">
               <img :src="music.cover" :alt="music.title" @error="$event.target.src='https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=400'">
+              <span v-if="music.videos > 1" class="p-badge">{{ music.videos }} P</span>
               <div class="play-overlay">
                 <button class="play-button" @click.stop="playMusic(music)">
                   <svg viewBox="0 0 24 24" fill="white" width="24" height="24"><path d="M8 5v14l11-7z"/></svg>
                 </button>
                 <button class="download-button" @click.stop="downloadMusic(music)" title="下载">
                   <svg viewBox="0 0 24 24" fill="white" width="18" height="18"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+                </button>
+                <button class="p-add-btn" @click.stop="openAddPSelect(music)" title="添加到歌单">
+                  <svg viewBox="0 0 24 24" fill="white" width="18" height="18"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
                 </button>
               </div>
             </div>
@@ -2046,6 +2387,15 @@ onUnmounted(() => {
                   <span>取消</span>
                 </button>
                 <button
+                  @click="openBatchAddToPlaylist"
+                  class="playlist-action-btn"
+                  :disabled="selectedTrackKeys.size === 0"
+                  :title="selectedTrackKeys.size === 0 ? '请先选择要添加的歌曲' : '将所选歌曲添加到其它歌单'"
+                >
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+                  <span>添加到...</span>
+                </button>
+                <button
                   @click="confirmBatchDeleteTracks"
                   class="playlist-action-btn danger"
                   :disabled="selectedTrackKeys.size === 0"
@@ -2069,6 +2419,15 @@ onUnmounted(() => {
                 <button @click="exportPlaylist(currentPlaylist)" class="playlist-action-btn" title="导出歌单">
                   <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
                   <span>导出</span>
+                </button>
+                <button
+                  v-if="!currentPlaylist?.isDefault"
+                  @click="openRenamePlaylist(currentPlaylist)"
+                  class="playlist-action-btn"
+                  title="重命名歌单"
+                >
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+                  <span>重命名</span>
                 </button>
                 <button
                   v-if="currentPlaylist?.isBiliFavorite"
@@ -2247,6 +2606,7 @@ onUnmounted(() => {
             >
             <div class="progress-bar">
               <div class="progress-fill" :style="{ width: (duration > 0 ? (currentTime / duration) * 100 : 0) + '%' }"></div>
+              <div class="buffered-fill" :style="{ width: bufferedProgress + '%' }"></div>
             </div>
           </div>
           <span class="progress-time">{{ parseDuration(duration) }}</span>
@@ -2301,9 +2661,9 @@ onUnmounted(() => {
 
     <Transition name="player-zoom">
       <div
-        v-if="showPlayerPage && currentTrack"
+        v-if="playerStore.showPlayerPage && currentTrack"
         class="player-page"
-        :class="{ active: showPlayerPage, 'no-visualizer': !settingsStore.audioVisualizerEnabled }"
+        :class="{ active: playerStore.showPlayerPage, 'no-visualizer': !settingsStore.audioVisualizerEnabled }"
         @click="closePlayerPage"
       >
       <!-- 音频可视化关闭时用当前歌曲封面作全屏模糊背景（所有主题通用） -->
@@ -2457,7 +2817,7 @@ onUnmounted(() => {
 
     <!-- 旧版 showThemePanel 主题面板已迁移到 MineView 设置 tab -->
 
-    <div v-if="showCreatePlaylistModal" class="modal-overlay" @click="cancelCreatePlaylist">
+    <div v-if="showCreatePlaylistModal" class="modal-overlay modal-overlay--top" @click="cancelCreatePlaylist">
       <div class="modal" @click.stop>
         <h2>创建歌单</h2>
         <div class="form-group">
@@ -2481,7 +2841,31 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <div v-if="showAddToPlaylistModal" class="modal-overlay" @click="showAddToPlaylistModal = false">
+    <div v-if="showRenameModal" class="modal-overlay modal-overlay--top" @click="cancelRenamePlaylist">
+      <div class="modal" @click.stop>
+        <h2>重命名歌单</h2>
+        <div class="form-group">
+          <label for="rename-playlist-name">歌单名称</label>
+          <input
+            type="text"
+            id="rename-playlist-name"
+            v-model="renameValue"
+            placeholder="请输入歌单名称"
+            @keyup.enter="confirmRenamePlaylist"
+          >
+        </div>
+        <div class="modal-buttons">
+          <button class="modal-btn cancel" @click="cancelRenamePlaylist">
+            取消
+          </button>
+          <button class="modal-btn confirm" @click="confirmRenamePlaylist">
+            保存
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="showAddToPlaylistModal" class="modal-overlay" @click="addToPlaylistTarget = null; showAddToPlaylistModal = false">
       <div class="modal" @click.stop>
         <h2>添加到歌单</h2>
         <div class="playlist-list-modal">
@@ -2499,7 +2883,128 @@ onUnmounted(() => {
           </div>
         </div>
         <div class="modal-buttons">
-          <button class="modal-btn cancel" @click="showAddToPlaylistModal = false">
+          <button class="modal-btn cancel" @click="addToPlaylistTarget = null; showAddToPlaylistModal = false">
+            关闭
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="showBatchAddToPlaylistModal" class="modal-overlay" @click="showBatchAddToPlaylistModal = false">
+      <div class="modal" @click.stop>
+        <h2>添加到歌单</h2>
+        <p class="batch-add-hint">已选 {{ selectedTrackKeys.size }} 首歌曲，选择要加入的歌单</p>
+        <div class="playlist-list-modal">
+          <div
+            v-for="playlist in playlistStore.userPlaylists"
+            :key="playlist.id"
+            class="playlist-modal-item"
+            :class="{ 'is-current': isCurrentPlaylist(playlist) }"
+            :title="isCurrentPlaylist(playlist) ? '当前歌单' : `添加到「${playlist.name}」`"
+            @click="!isCurrentPlaylist(playlist) && batchAddToPlaylist(playlist)"
+          >
+            <span>
+              {{ playlist.name }}
+              <span v-if="isCurrentPlaylist(playlist)" class="playlist-modal-item-tag">当前歌单</span>
+            </span>
+            <span class="playlist-count">{{ playlist.music.length }} 首</span>
+          </div>
+          <div v-if="playlistStore.userPlaylists.filter(p => p.id !== currentPlaylist?.id).length === 0" class="empty-list">
+            <p>暂无其它歌单，请先创建</p>
+          </div>
+        </div>
+        <div class="modal-buttons">
+          <button class="modal-btn cancel" @click="showBatchAddToPlaylistModal = false">
+            关闭
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 主页/搜索页多分P视频：一体式勾选分P + 选择目标歌单 -->
+    <div v-if="showAddPModal" class="modal-overlay" @click="showAddPModal = false">
+      <div class="modal" @click.stop>
+        <div class="p-modal-header">
+          <div class="p-modal-title-wrap">
+            <h2>添加到歌单</h2>
+            <p class="p-modal-subtitle">{{ pendingAddMusic?.title }}<span v-if="pendingEpisodes.length > 1">（共 {{ pendingEpisodes.length }} P）</span></p>
+          </div>
+          <button
+            @click="isAllPsSelected() ? (selectedPKeys = new Set()) : selectAllPs()"
+            class="playlist-action-btn"
+            :title="isAllPsSelected() ? '取消全选' : '全选所有分P'"
+          >
+            <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z"/></svg>
+            <span>{{ isAllPsSelected() ? '取消全选' : '全选' }}</span>
+          </button>
+        </div>
+        <div v-if="isLoadingPList" class="p-select-loading">
+          <div class="loading-spinner"></div>
+          <p>加载分P列表...</p>
+        </div>
+        <div v-else class="p-select-list">
+          <div
+            v-for="(episode, index) in pendingEpisodes"
+            :key="episode.cid"
+            class="p-select-row"
+            :class="{ 'is-selected': selectedPKeys.has(episode.cid) }"
+            @click="togglePSelection(episode.cid)"
+          >
+            <span
+              class="p-select-checkbox"
+              :class="{ checked: selectedPKeys.has(episode.cid) }"
+              @click.stop="togglePSelection(episode.cid)"
+            >
+              <svg v-if="selectedPKeys.has(episode.cid)" viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z"/></svg>
+            </span>
+            <span class="p-select-index">{{ index + 1 }}</span>
+            <span class="p-select-part">{{ episode.part }}</span>
+            <span class="p-select-duration">{{ parseDuration(episode.duration) }}</span>
+          </div>
+          <div v-if="pendingEpisodes.length === 0" class="empty-list">
+            <p>未获取到分P列表</p>
+          </div>
+        </div>
+        <div class="p-add-to-section">
+          <div class="p-add-to-header">
+            <span>已选 {{ selectedPKeys.size }} / {{ pendingEpisodes.length }} P</span>
+            <button
+              class="p-create-all-btn"
+              @click="createPlaylistWithPs('all')"
+              title="创建以视频标题命名的新歌单，并加入全部P"
+            >
+              <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+              <span>新建歌单（全部P）</span>
+            </button>
+          </div>
+          <div class="p-add-to-list">
+            <div
+              class="playlist-modal-item"
+              @click="createPlaylistWithPs('selected')"
+              title="创建新歌单并加入已勾选的P"
+            >
+              <span>
+                <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16" style="margin-right: 8px; vertical-align: -2px;"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+                新建歌单（加入已勾选的P）
+              </span>
+            </div>
+            <div
+              v-for="playlist in playlistStore.userPlaylists"
+              :key="playlist.id"
+              class="playlist-modal-item"
+              :title="`添加到「${playlist.name}」`"
+              @click="addSelectedPsToPlaylist(playlist)"
+            >
+              <span>{{ playlist.name }}</span>
+              <span class="playlist-count">{{ playlist.music.length }} 首</span>
+            </div>
+            <div v-if="playlistStore.userPlaylists.length === 0" class="empty-list">
+              <p>暂无歌单，可通过上方"新建歌单"创建</p>
+            </div>
+          </div>
+        </div>
+        <div class="modal-buttons">
+          <button class="modal-btn cancel" @click="showAddPModal = false">
             关闭
           </button>
         </div>

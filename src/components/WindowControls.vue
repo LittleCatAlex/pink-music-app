@@ -173,8 +173,8 @@ function onBtnMouseDown(e) {
 }
 
 .control-btn.close:hover {
-  background: #e81123;
-  color: #fff;
+  background: var(--error-color);
+  color: var(--text-primary);
 }
 
 .control-btn svg {
@@ -188,14 +188,14 @@ function onBtnMouseDown(e) {
 
 /* 浅色模式：默认色用更深的灰色，与白底对比 */
 :global([data-theme="light"]) .control-btn {
-  color: #555;
+  color: var(--text-secondary);
 }
 :global([data-theme="light"]) .control-btn:hover {
-  background: rgba(0, 0, 0, 0.06);
-  color: #111;
+  background: var(--bg-card-hover);
+  color: var(--text-primary);
 }
 :global([data-theme="light"]) .control-btn.close:hover {
-  background: #e81123;
-  color: #fff;
+  background: var(--error-color);
+  color: var(--text-primary);
 }
 </style>

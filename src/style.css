@@ -1432,19 +1432,56 @@ button:active:not(:disabled):not(.no-press),
   transition: all var(--transition-smooth);
 }
 
-.download-button:hover {
+.download-button:hover,
+.p-add-btn:hover {
   background: rgba(255, 255, 255, 0.25);
   transform: scale(1.1);
 }
 
-.download-button:active {
+.download-button:active,
+.p-add-btn:active {
   transform: scale(0.95);
 }
 
-.download-button svg {
+.download-button svg,
+.p-add-btn svg {
   width: 16px;
   height: 16px;
   color: white;
+}
+
+/* 卡片"添加到歌单"按钮（与下载按钮同尺寸） */
+.p-add-btn {
+  width: 36px;
+  height: 36px;
+  background: rgba(255, 255, 255, 0.15);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  cursor: pointer;
+  transition: all var(--transition-smooth);
+}
+
+/* 卡片分P数徽标（封面左下角） */
+.p-badge {
+  position: absolute;
+  bottom: 8px;
+  left: 8px;
+  padding: 3px 8px;
+  font-size: 10px;
+  font-weight: var(--font-weight-semibold);
+  color: white;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border-radius: var(--radius-full);
+  letter-spacing: 0.3px;
+  pointer-events: none;
+  z-index: 1;
 }
 
 .card-title {
@@ -2316,6 +2353,10 @@ button:active:not(:disabled):not(.no-press),
   justify-content: center;
   z-index: 1000;
   animation: fadeIn 0.2s ease;
+}
+
+.modal-overlay--top {
+  z-index: 1100;
 }
 
 .modal {
@@ -3503,6 +3544,173 @@ button:active:not(:disabled):not(.no-press),
 .playlist-modal-item .playlist-count {
   font-size: 12px;
   opacity: 0.6;
+}
+
+.batch-add-hint {
+  font-size: 13px;
+  opacity: 0.7;
+  margin: 8px 0 -4px;
+}
+
+.playlist-modal-item.is-current {
+  cursor: not-allowed;
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.playlist-modal-item .playlist-modal-item-tag {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  background: var(--bg-card-hover);
+  vertical-align: middle;
+}
+
+/* ==================== 多分P添加弹窗样式 ==================== */
+.p-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.p-modal-title-wrap {
+  min-width: 0;
+}
+
+.p-modal-title-wrap h2 {
+  margin-bottom: 2px;
+}
+
+.p-modal-subtitle {
+  font-size: 12px;
+  opacity: 0.65;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 340px;
+}
+
+.p-select-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 28px 0;
+  font-size: 13px;
+  opacity: 0.7;
+}
+
+.p-select-list {
+  max-height: 260px;
+  overflow-y: auto;
+  margin: 14px 0 4px;
+  border: 1px solid var(--border-color, rgba(128, 128, 128, 0.2));
+  border-radius: 8px;
+}
+
+.p-select-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.p-select-row:hover {
+  background: var(--bg-card-hover);
+}
+
+.p-select-row.is-selected {
+  background: var(--accent-glow-subtle);
+}
+
+.p-select-checkbox {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 2px solid var(--border-color, var(--border-glow));
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  transition: all var(--transition-fast);
+  cursor: pointer;
+}
+
+.p-select-checkbox.checked {
+  background: var(--primary-color);
+  border-color: var(--primary-color);
+  box-shadow: 0 0 12px var(--accent-glow);
+}
+
+.p-select-index {
+  font-size: 12px;
+  opacity: 0.55;
+  min-width: 20px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.p-select-part {
+  flex: 1;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.p-select-duration {
+  font-size: 12px;
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+
+.p-add-to-section {
+  margin-top: 10px;
+}
+
+.p-add-to-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  opacity: 0.7;
+  padding: 0 4px 4px;
+}
+
+.p-create-all-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border: none;
+  border-radius: var(--radius-full);
+  background: var(--primary-color);
+  color: white;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.p-create-all-btn:hover {
+  opacity: 0.9;
+  transform: translateY(-1px);
+}
+
+.p-add-to-list {
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--border-color, rgba(128, 128, 128, 0.2));
+  border-radius: 8px;
+  padding: 4px;
 }
 
 /* ==================== 播放模式图标样式 ==================== */
@@ -5566,7 +5774,8 @@ input:checked + .slider:before {
 [data-color="apple-music"] input[type="text"],
 [data-color="apple-music"] input[type="search"] {
   border: none !important;
-  background: rgba(255, 255, 255, 0.08) !important;
+  /* 与底部 .player-bar 背景同色（深色模式 28/28/28 @ 82%）*/
+  background: rgba(28, 28, 28, 0.82) !important;
   color: var(--text-primary) !important;
   border-radius: 6px !important;
   padding: 8px 12px !important;
@@ -5627,18 +5836,21 @@ input:checked + .slider:before {
   border-top: 1px solid rgba(0, 0, 0, 0.08) !important;
 }
 
-/* Apple Music 浅色模式：输入框背景反色 */
+/* Apple Music 浅色模式：输入框背景与 .player-bar 同色（白 85%）*/
 [data-theme="light"][data-color="apple-music"] .setting-item input,
 [data-theme="light"][data-color="apple-music"] .setting-item select,
+[data-theme="light"][data-color="apple-music"] .quality-select,
+[data-theme="light"][data-color="apple-music"] .path-text,
+[data-theme="light"][data-color="apple-music"] .eq-preset-select,
 [data-theme="light"][data-color="apple-music"] input[type="text"],
 [data-theme="light"][data-color="apple-music"] input[type="search"] {
-  background: rgba(0, 0, 0, 0.06) !important;
+  background: rgba(255, 255, 255, 0.85) !important;
 }
 [data-theme="light"][data-color="apple-music"] .setting-item input:focus,
 [data-theme="light"][data-color="apple-music"] .setting-item select:focus,
 [data-theme="light"][data-color="apple-music"] input[type="text"]:focus,
 [data-theme="light"][data-color="apple-music"] input[type="search"]:focus {
-  background: rgba(0, 0, 0, 0.10) !important;
+  background: rgba(255, 255, 255, 0.95) !important;
 }
 
 /* Apple Music 浅色模式：面板毛玻璃（浅白底，通透感更强） */
@@ -5931,10 +6143,13 @@ input:checked + .slider:before {
   /* 强制硬件加速 + 滤镜性能提示 */
   will-change: filter, transform;
   transform: translateZ(0);
-  /* 关键：背景置为透明，避免图片 blur 半径在边缘显出底层白底
-     （之前用 var(--bg-primary) 在浅色模式下会露出 #F8FAFC 白色描边）。
-     父级 .player-page.no-visualizer 自带浅色渐变 fallback，会自然透出。 */
+  /* 背景色：深色模式透明让图片铺满；浅色模式下设为与页面背景一致，
+     消除 blur(25px) 边缘产生的白色光晕 */
   background: transparent;
+}
+
+[data-theme="light"] .player-page-cover-bg {
+  background: linear-gradient(180deg, #FAFAFC 0%, #F0E8F4 100%);
 }
 
 .player-page-cover-bg__img {
@@ -5967,13 +6182,13 @@ input:checked + .slider:before {
   pointer-events: none;
 }
 
-/* 浅色模式（所有主题）：更轻的遮罩 */
+/* 浅色模式（所有主题）：透明毛玻璃遮罩，大半径 backdrop-blur 把封面糊成
+   均匀的粉彩底，深灰歌词/标题对比度由玻璃自身保证，不依赖封面明暗。
+   封面 img 保持全透明显示，由玻璃来糊（60px 远大于 img 自身的 25px）。 */
 [data-theme="light"] .player-page-cover-bg::after {
-  background:
-    linear-gradient(180deg,
-      rgba(255, 255, 255, 0.15) 0%,
-      rgba(255, 255, 255, 0.30) 50%,
-      rgba(255, 255, 255, 0.50) 100%);
+  background: rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(60px) saturate(1.1);
+  -webkit-backdrop-filter: blur(60px) saturate(1.1);
 }
 
 /* Apple Music 主题下，强制覆盖 .player-page / .player-page.no-visualizer 默认背景

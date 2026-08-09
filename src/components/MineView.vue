@@ -206,7 +206,7 @@ function clearPlayHistory() {
 }
 
 function playFromHistory(music) {
-  playerStore.setShowPlayerPage(true)
+  // 不自动进大屏播放页：只在底部播放栏播放，与其它播放入口行为一致
   // 派发自定义事件让父组件播放
   const evt = new CustomEvent('pink-music:play-track', { detail: music })
   window.dispatchEvent(evt)
@@ -638,6 +638,25 @@ function handleOpenSettings() {
       </div>
 
       <div class="settings-section glass-card">
+        <h3>歌词设置</h3>
+        <div class="setting-item">
+          <label>歌词显示模式</label>
+          <div class="setting-value">
+            <select
+              v-model="settingsStore.lyricDisplayMode"
+              @change="settingsStore.setLyricDisplayMode(settingsStore.lyricDisplayMode)"
+              class="quality-select"
+            >
+              <option value="original">原文（无翻译）</option>
+              <option value="romaji">原文 + 罗马音</option>
+              <option value="translation">原文 + 中文翻译</option>
+            </select>
+          </div>
+        </div>
+        <p class="setting-hint">主行始终显示原文，选中的罗马音/翻译以小字附注在原文下方。部分歌曲可能没有罗马音或翻译数据，将自动只显示原文。</p>
+      </div>
+
+      <div class="settings-section glass-card">
         <h3>下载设置</h3>
         <div class="setting-item">
           <label>下载目录</label>
@@ -671,7 +690,7 @@ function handleOpenSettings() {
         <div class="about-content">
           <div class="about-header">
             <span class="logo-text">Pink Music</span>
-            <span class="version">v2.4.0</span>
+            <span class="version">v2.5.0</span>
           </div>
           <p class="about-desc">一款优雅的 B 站音乐播放器，让你发现并享受喜欢的音乐。</p>
           <button class="btn-secondary" @click="openGitHub">

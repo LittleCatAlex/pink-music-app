@@ -82,7 +82,7 @@ export function useAudioPlayer() {
     playerStore.setDuration(music.duration || 180)
     playerStore.setCurrentTime(0)
     playerStore.setBufferedProgress(0)
-    playerStore.setShowPlayerPage(true)
+    // 不自动跳转大屏播放页：播放只让底部播放栏出现，用户需要大屏时手动点播放栏封面
 
     let audioSrc = null
 

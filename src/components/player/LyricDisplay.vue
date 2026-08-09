@@ -1,6 +1,6 @@
 <script setup>
 import { ref, watch, onMounted, onUnmounted, computed, nextTick } from 'vue'
-import { useLyricStore, usePlayerStore } from '@/stores'
+import { useLyricStore, usePlayerStore, useSettingsStore } from '@/stores'
 
 const props = defineProps({
   currentTime: {
@@ -23,6 +23,7 @@ const props = defineProps({
 
 const lyricStore = useLyricStore()
 const playerStore = usePlayerStore()
+const settingsStore = useSettingsStore()
 
 // === 搜索面板状态 ===
 const searchKeyword = ref('')
@@ -43,10 +44,11 @@ let scrollReturnTimer = null
 // 大屏模式：视区固定高度（不让 flex 撑过头把工具栏挤没）；
 // 居中由 ResizeObserver 测得的实际视区高度驱动，喂给 trackStyle。
 // 普通模式：紧凑列表，一屏可见 3-4 行
-// 行高：把"已唱过的歌词"也会占据的 1 行槽位算进去 —— 大屏 90 / 普通 45，
-// 文本居中后每行上下各多出约 27px / 13px 留白，给呼吸感；viewport / trackStyle
-// / mask 全部自动按新行高重算，不用额外改。
-const LINE_HEIGHT = computed(() => (props.large ? 90 : 45))
+// 行高：要容纳"主行原文 + 最多两行附注（罗马音/翻译）"，按 3 行内容上限计算：
+// 大屏 24px 主行×1.5 + 2×15px 附注×1.5 ≈ 78px，活跃行 32px×1.5 后 ≈ 90px，取 100px 留呼吸感；
+// 普通 14px 主行 + 2×11px 附注 ≈ 50px，活跃 18px 后 ≈ 55px，取 60px。
+// 行高统一，viewport / trackStyle / mask 全部自动按新行高重算，不用额外改。
+const LINE_HEIGHT = computed(() => (props.large ? 100 : 60))
 const VIEWPORT_HEIGHT = computed(() => (props.large ? 620 : 200))
 const viewportRef = ref(null)
 const actualViewportHeight = ref(props.large ? 620 : 200)
@@ -143,6 +145,14 @@ watch(
   },
   { immediate: true }
 )
+
+// === 歌词显示模式变更时重新加载歌词 ===
+// 使用自定义事件确保跨组件可靠触发
+// 歌词数据已在缓存中，模式切换仅需更新显示字段，无需重新请求网络。
+function handleLyricModeChange() {
+  // 无操作：lyricDisplayMode 是响应式的，
+  // getSubLines() 会自动用新模式重新渲染每一行的附注
+}
 
 // === 歌词点击跳转 ===
 function handleLyricClick(lyric) {
@@ -314,6 +324,8 @@ async function handleResetManual() {
 onMounted(() => {
   lyricStore.loadCache()
   document.addEventListener('keydown', onGlobalKeydown)
+  // 监听歌词显示模式变更事件
+  window.addEventListener('pink-music:lyric-mode-changed', handleLyricModeChange)
   // 大屏：监听歌词视区实际高度，喂给 trackStyle 居中计算
   if (props.large && viewportRef.value) {
     actualViewportHeight.value = viewportRef.value.clientHeight || VIEWPORT_HEIGHT.value
@@ -334,6 +346,7 @@ onMounted(() => {
 onUnmounted(() => {
   document.removeEventListener('keydown', onGlobalKeydown)
   if (scrollReturnTimer) clearTimeout(scrollReturnTimer)
+  window.removeEventListener('pink-music:lyric-mode-changed', handleLyricModeChange)
 })
 
 // 全局快捷键：在歌词面板显示时按 / 唤起搜索
@@ -344,6 +357,15 @@ function onGlobalKeydown(e) {
     e.preventDefault()
     openSearch()
   }
+}
+
+// 根据设置返回该行的附注行（罗马音/翻译，缺失则空数组）：
+// 主行永远显示原文，模式只控制下方叠加哪行小字附注。
+function getSubLines(line) {
+  const mode = settingsStore.lyricDisplayMode
+  if (mode === 'romaji') return line.romaji ? [line.romaji] : []
+  if (mode === 'translation') return line.translation ? [line.translation] : []
+  return []
 }
 </script>
 
@@ -404,7 +426,10 @@ function onGlobalKeydown(e) {
               }"
               :style="{ height: LINE_HEIGHT + 'px' }"
               @click="handleLyricClick(line)"
-            >{{ line.text }}</div>
+            >
+              <span class="line-main">{{ line.text }}</span>
+              <span v-for="(sub, si) in getSubLines(line)" :key="si" class="line-sub">{{ sub }}</span>
+            </div>
           </div>
         </div>
 
@@ -621,8 +646,10 @@ function onGlobalKeydown(e) {
 
 .line {
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 2px;
   color: var(--text-secondary);
   font-size: 14px;
   text-align: center;
@@ -637,13 +664,50 @@ function onGlobalKeydown(e) {
      手滚动模式（isManualScrolling=true）下 past class 不生效，opacity 自动回到 1。 */
   transition: color 0.25s ease, font-size 0.3s ease, transform 0.3s ease, opacity 0.45s ease;
 }
+/* 主行（原文）：继承 .line 的字号/字重规则 */
+.line-main {
+  display: block;
+  max-width: 100%;
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+/* 附注行（罗马音/翻译）：小字号弱化，不抢主行焦点 */
+.line-sub {
+  display: block;
+  max-width: 100%;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--text-muted);
+  opacity: 0.85;
+  overflow-wrap: break-word;
+  word-break: normal;
+}
 .line:hover { color: var(--text-primary); }
+.line:hover .line-sub { color: var(--text-secondary); }
+/* 浅色模式下，非 Apple Music 主题的歌词未唱行改为与 Apple Music 一致的近黑色。
+   :not(.active) 让活跃行保持主题色高亮，不受本规则影响 */
+[data-theme="light"]:not([data-color="apple-music"]) .line:not(.active) {
+  color: rgba(0, 0, 0, 0.65);
+}
+[data-theme="light"]:not([data-color="apple-music"]) .line:not(.active):hover {
+  color: var(--text-primary);
+}
+[data-theme="light"]:not([data-color="apple-music"]) .line:not(.active) .line-sub {
+  color: rgba(0, 0, 0, 0.4);
+}
+[data-theme="light"]:not([data-color="apple-music"]) .line:not(.active):hover .line-sub {
+  color: rgba(0, 0, 0, 0.65);
+}
 .line.active {
   color: var(--primary-color);
   font-size: 18px;
   font-weight: 600;
   /* 活跃行轻微放大，加强焦点感 */
   transform: scale(1.02);
+}
+.line.active .line-sub {
+  color: rgba(var(--primary-color-rgb), 0.7);
+  opacity: 1;
 }
 /* 已唱完的行：在自动跟随模式下完全淡出，但保留槽位高度避免布局跳动。
    pointer-events: none 防止误点到"看不见"的行触发跳转。 */
@@ -654,12 +718,12 @@ function onGlobalKeydown(e) {
 
 /* 大屏播放页内的歌词（large prop 触发）
    - 字体：Outfit（项目已有的圆润无衬线），无衬线 + 偏粗字重
-   - 普通行 24px / 600，行高 1.5；LINE_HEIGHT 90 足够容纳中英双语行偶尔换行成 2 行
-   - 活跃行 32px / 800，颜色高亮
+   - 普通行主行 24px / 600，行高 1.5；LINE_HEIGHT 100 足够容纳主行 + 两行附注（罗马音/翻译）
+   - 活跃行主行 32px / 800，颜色高亮；附注 15px 弱化
    - 整体在 player-page-right 中垂直居中；视区 620px，actions 在底部
    - 视区几何中心 y = 50vh - 4（受 player-page-content 上下 padding 80/48 影响），
      通过 trackStyle 追加 LARGE_SCREEN_CENTER_OFFSET = 4px 把活跃行校正到屏幕正中 (50vh)
-   - 一屏可见 6-7 行（620 / 90 ≈ 6.9，配合 past 行隐藏后视觉上更"干净"） */
+   - 一屏可见 5-6 行（620 / 100 ≈ 6.2，配合 past 行隐藏后视觉上更"干净"） */
 .lyric-stage--large {
   /* 在 .player-page-right (flex stretch) 内不撑满，垂直居中 */
   align-self: center;
@@ -692,11 +756,8 @@ function onGlobalKeydown(e) {
   line-height: 1.5;
   font-weight: 600;
   letter-spacing: -0.3px;
-  /* 中英双语行偶尔需要换行：解除 max-width:90% 限制，让行宽跟随列宽 */
+  /* 主行与附注行可换行：解除 max-width:90% 限制，让行宽跟随列宽 */
   max-width: 100%;
-  /* 允许长行在词边界换行，避免单字符换行 */
-  overflow-wrap: break-word;
-  word-break: normal;
 }
 .lyric-stage--large .line.active {
   font-size: 32px;
@@ -704,6 +765,17 @@ function onGlobalKeydown(e) {
   /* 不用 scale：text-box 高度变化会让居中计算漂移 */
   transform: none;
   letter-spacing: -0.5px;
+}
+/* 大屏附注行：15px 弱化，活跃时 16px 微亮 */
+.lyric-stage--large .line-sub {
+  font-size: 15px;
+  font-weight: 400;
+  letter-spacing: 0;
+  opacity: 0.8;
+}
+.lyric-stage--large .line.active .line-sub {
+  font-size: 16px;
+  opacity: 1;
 }
 
 /* ===== 工具栏 ===== */
@@ -863,7 +935,7 @@ function onGlobalKeydown(e) {
 }
 .search-go {
   background: var(--primary-color);
-  color: #fff;
+  color: var(--text-primary);
 }
 .search-go:disabled { opacity: 0.5; cursor: not-allowed; }
 .search-close {

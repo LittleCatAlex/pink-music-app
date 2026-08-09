@@ -176,7 +176,7 @@ onBeforeUnmount(() => {
 .login-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.6);
+  background: var(--bg-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -224,7 +224,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #fff;
+  background: var(--bg-secondary);
   border-radius: var(--radius-md);
   border: 1px solid var(--border-color);
   position: relative;
@@ -234,7 +234,7 @@ onBeforeUnmount(() => {
   height: 180px;
 }
 .qrcode-placeholder {
-  color: #999;
+  color: var(--text-muted);
   font-size: 13px;
 }
 .qrcode-status {
@@ -242,10 +242,10 @@ onBeforeUnmount(() => {
   font-size: 13px;
   color: var(--text-secondary);
 }
-.qrcode-status.scanned { color: #ff9800; }
-.qrcode-status.success { color: #4caf50; }
+.qrcode-status.scanned { color: var(--warning-color); }
+.qrcode-status.success { color: var(--success-color); }
 .qrcode-status.expired,
-.qrcode-status.error { color: #e81123; }
+.qrcode-status.error { color: var(--error-color); }
 .qrcode-actions {
   margin-bottom: 10px;
 }
@@ -290,8 +290,8 @@ onBeforeUnmount(() => {
   margin-top: 4px;
   padding: 1px 6px;
   font-size: 11px;
-  color: #fff;
-  background: #fb7299;
+  color: var(--text-primary);
+  background: var(--primary-color);
   border-radius: 3px;
 }
 .logged-hint {
@@ -321,10 +321,10 @@ onBeforeUnmount(() => {
 .action-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 .action-btn.primary {
   background: var(--primary-color);
-  color: #fff;
+  color: var(--text-primary);
   border-color: var(--primary-color);
 }
 .action-btn.primary:hover:not(:disabled) { opacity: 0.9; }
-.action-btn.danger { color: #e81123; border-color: #e81123; }
-.action-btn.danger:hover:not(:disabled) { background: #e81123; color: #fff; }
+.action-btn.danger { color: var(--error-color); border-color: var(--error-color); }
+.action-btn.danger:hover:not(:disabled) { background: var(--error-color); color: var(--text-primary); }
 </style>
