@@ -4,6 +4,10 @@
 
 非官方项目，与哔哩哔哩无任何官方关联或背书。
 
+<div align="center">
+  <img src="screenshots/homepage.png" alt="Pink Music 主页 / 推荐" width="80%" />
+</div>
+
 ## ✨ 特色
 
 - 🎼 支持登录 Bilibili 并获取收藏夹
@@ -58,6 +62,10 @@ npm run electron:build -- --win
 
 在搜索框中输入关键词，点击搜索按钮或按回车键进行搜索。点击音乐卡片直接播放。
 
+<div align="center">
+  <img src="screenshots/searchpage.png" alt="搜索结果页" width="80%" />
+</div>
+
 ### 分P切换
 
 当播放的视频包含多个分P时，点击右侧列表按钮查看并切换分P。
@@ -70,6 +78,10 @@ npm run electron:build -- --win
 - 批量删除：支持歌单内批量删除歌曲
 - 一键播放：歌单封面/详情页「播放」按钮一键播放整个歌单
 
+<div align="center">
+  <img src="screenshots/listpage.png" alt="歌单列表页" width="80%" />
+</div>
+
 ### 下载功能
 
 在音乐卡片或歌单中点击下载按钮，音频将保存到下载目录，支持在下载管理器查看下载进度以及下载记录，支持在设置中调整音质。
@@ -77,6 +89,10 @@ npm run electron:build -- --win
 ### 界面定制
 
 设置中的主题选项可以设置主题
+
+<div align="center">
+  <img src="screenshots/mineview.png" alt="我的 / 设置页" width="80%" />
+</div>
 
 ### 均衡器
 
@@ -92,11 +108,16 @@ npm run electron:build -- --win
 
 设置页提供「大屏播放页频谱可视化」开关与激进度控制：
 
+
 - 频谱条贴底渲染，最大高度占屏 18%
 - 自适应主题色，实时读取 CSS 变量
 - requestAnimationFrame 驱动，窗口失焦/暂停时保留轻微呼吸动画
 
 ### 歌词
+
+<div align="center">
+  <img src="screenshots/playpage.png" alt="大屏播放页（频谱可视化与歌词）" width="80%" />
+</div>
 
 大屏播放页右上角提供「显示/隐藏歌词」开关：
 
