@@ -205,7 +205,8 @@ function mergePlaylists(loaded, pending) {
     // 找到了 → 合并 music
     if (!existing.music) existing.music = []
     if (!pp.music) continue
-    for (const song of pp.music) {
+    // 防御：pending 快照里若是混入了非歌曲对象（事件对象脏数据），合并时直接过滤
+    for (const song of pp.music.filter(m => isTrackLike(m))) {
       if (!song) continue
       const dup = existing.music.some(m => {
         if (!m) return false
@@ -252,10 +253,69 @@ function ensureStableIds(arr) {
   return arr
 }
 
-// 同步 peek 旧数据，避免首屏闪一下空歌单
+/**
+ * 判断对象是否"像一首歌"。
+ * 真正的歌曲条目至少具备 bvid（B 站稿件号）、favId（B 站收藏项），
+ * 或者有非空标题。DOM 事件对象（MouseEvent 等）没有这些字段——
+ * 历史 bug：模板裸绑定 @click="openAddToPlaylistModal" 会把原生 click 事件
+ * 传进添加流程，事件对象被序列化后只剩 isTrusted/_vts，导致歌单里出现
+ * "空白标题 + 未知作者"的脏条目。
+ */
+function isTrackLike(music) {
+  if (!music || typeof music !== 'object') return false
+  const hasBvid = typeof music.bvid === 'string' && music.bvid.length > 0
+  const hasFavId = music.favId != null
+  const hasMeta = typeof music.title === 'string' && music.title.length > 0
+  return hasBvid || hasFavId || hasMeta
+}
+
+/** 歌曲条目允许保留的业务字段白名单（写歌单时只拷贝这些键） */
+const TRACK_FIELDS = ['bvid', 'aid', 'cid', 'favId', 'favType', 'title', 'author', 'cover', 'duration', 'playCount', 'pubdate', 'description', 'videos', 'isBiliFavoriteResource']
+
+/**
+ * 从任意对象中抽出歌曲条目应有的字段，并补齐标题/作者/封面兜底。
+ * 关键：不再整体展开源对象（旧实现的 `...music` 会把事件对象上的
+ * isTrusted/_vts 等杂散键一并写进歌单）。
+ */
+function pickTrackFields(music) {
+  const out = {}
+  if (!music || typeof music !== 'object') return out
+  for (const k of TRACK_FIELDS) {
+    if (music[k] !== undefined && music[k] !== null) out[k] = music[k]
+  }
+  out.title = out.title || '未知标题'
+  out.author = out.author || '未知作者'
+  out.cover = out.cover || ''
+  out.duration = out.duration || 0
+  out.bvid = out.bvid || ''
+  out.cid = out.cid ?? (music.cid ?? null)
+  return out
+}
+
+/**
+ * 清理歌单里的非法歌曲条目（历史遗留的事件对象等脏数据）。
+ * 幂等：没有脏条目时返回原数组引用，不触发多余的重渲染/写盘。
+ */
+function sanitizePlaylistMusic(playlists) {
+  if (!Array.isArray(playlists)) return playlists
+  let changed = false
+  const out = playlists.map(p => {
+    if (!p || typeof p !== 'object' || !Array.isArray(p.music)) return p
+    const cleaned = p.music.filter(m => isTrackLike(m))
+    if (cleaned.length !== p.music.length) {
+      changed = true
+      return { ...p, music: cleaned }
+    }
+    return p
+  })
+  return changed ? out : playlists
+}
+
+// 同步 peek 旧数据，避免首屏闪一下空歌单（顺带清理历史脏条目，
+// 防止首屏就出现"空白标题 + 未知作者"的歌曲行）
 const peekResult = peekPlaylists()
 const initialUserPlaylists = ensureStableIds(
-  Array.isArray(peekResult.data) ? peekResult.data : []
+  sanitizePlaylistMusic(Array.isArray(peekResult.data) ? peekResult.data : [])
 )
 
 export const usePlaylistStore = defineStore('playlist', {
@@ -312,9 +372,13 @@ export const usePlaylistStore = defineStore('playlist', {
         console.warn('[playlistStore] 读主存储失败:', e.message)
       }
 
+      // 1.5) 清理历史遗留的脏条目（事件对象等非歌曲数据），修复"空白标题/未知作者"
+      if (Array.isArray(data)) data = sanitizePlaylistMusic(data)
+
       // 2) 主存储空时回退到 localStorage 老 key，并 await 迁移
       if (!Array.isArray(data) && legacyData) {
-        data = ensureStableIds(legacyData)
+        // 迁移前也先做一次清理，避免脏数据被搬进主存储
+        data = sanitizePlaylistMusic(ensureStableIds(legacyData))
         const ok = await this._migrateToMainStore(data, legacyKey)
         if (!ok) {
           // 写主存储彻底失败：降级到 localStorage 当前 key
@@ -454,6 +518,11 @@ export const usePlaylistStore = defineStore('playlist', {
      * @returns {Promise<{main: boolean, local: string}>}
      */
     async _writeNow() {
+      // 写盘前清理脏条目（事件对象等非歌曲数据），防止再次被持久化
+      const cleaned = sanitizePlaylistMusic(this.userPlaylists)
+      if (cleaned !== this.userPlaylists) {
+        this.userPlaylists = cleaned
+      }
       try {
         const res = await storage.save(this.userPlaylists)
         if (res && res.main === false) {
@@ -482,8 +551,8 @@ export const usePlaylistStore = defineStore('playlist', {
         console.warn('[playlistStore] flush 时 _loaded 仍未置位，跳过主存储写')
         return { main: false, local: 'skipped', reason: 'not-loaded' }
       }
-      // 写一个最新快照
-      const snapshot = JSON.parse(JSON.stringify(this.userPlaylists))
+      // 写一个最新快照（先清理脏条目，避免事件对象等杂散数据在退出时落盘）
+      const snapshot = sanitizePlaylistMusic(JSON.parse(JSON.stringify(this.userPlaylists)))
       try {
         // localStorage 立即同步写（不依赖 debounce 队列）
         writeLocalJsonNow('playlists', snapshot)
@@ -527,7 +596,7 @@ export const usePlaylistStore = defineStore('playlist', {
 
     /**
      * 把一首歌加入指定歌单（默认入"收藏夹"）。
-     * 去重逻辑：bvid+cid 同时匹配才算重复（与 App.vue addToPlaylist 行为一致）。
+     * 去重逻辑：bvid 必须匹配；cid 同时存在时才要求一致（search/recommended 结果可能无 cid）
      * @param {object} music
      * @param {object} [targetPlaylist] 不传则入收藏夹
      * @returns {object|null} 加入的歌单；找不到目标歌单返回 null
@@ -535,14 +604,24 @@ export const usePlaylistStore = defineStore('playlist', {
     async addToPlaylist(music, targetPlaylist) {
       const target = targetPlaylist || this.userPlaylists.find(p => p.id === 'favorites')
       if (!target) return null
+      // 防御：非歌曲对象（例如 DOM 事件对象）一律忽略，防止脏条目被写进歌单
+      if (!isTrackLike(music)) {
+        console.warn('[playlistStore] addToPlaylist 收到非歌曲对象，已忽略:', typeof music, music && Object.keys(music).slice(0, 5))
+        return target
+      }
       if (!target.music) target.music = []
-      // bvid+cid 同时匹配才判重（多P视频的同 bvid 不同 cid 应允许添加）
+      // bvid 必须匹配；cid 同时存在时才要求一致（search/recommended 结果可能无 cid）
       const exists = target.music.some(m =>
-        m && music &&
-        (m.bvid ?? null) === (music.bvid ?? null) &&
-        (m.cid ?? null) === (music.cid ?? null)
+        m && music && (m.bvid ?? null) === (music.bvid ?? null) &&
+        ((m.cid ?? null) !== null && (music.cid ?? null) !== null
+          ? (m.cid ?? null) === (music.cid ?? null)
+          : true)
       )
-      if (!exists) target.music.push(music)
+      if (!exists) {
+        // 规范化：只抽取歌曲字段并补齐标题/作者/封面（不再整体展开 music，
+        // 避免事件对象上的 isTrusted/_vts 等杂散键被持久化）
+        target.music.push(pickTrackFields(music))
+      }
       // 封面始终跟随第一首音乐（B 站收藏夹保留 B 站云端封面）
       if (!target.isBiliFavorite) {
         target.cover = target.music[0]?.cover || ''

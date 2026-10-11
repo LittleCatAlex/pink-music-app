@@ -1,45 +1,61 @@
 import { usePlayerStore, usePlaylistStore, useSearchStore, useSettingsStore } from '@/stores'
-import { selectAudioUrl } from '@/utils/audio.js'
+import {
+  getAudioEl,
+  getPlaybackRuntime,
+  bindPlaybackRuntime,
+  playWithResolvedSrc,
+  pauseAudio,
+  playAudio,
+  seekAudio,
+  updateMediaSession,
+  setupMediaSessionHandlers,
+  prefetchTrack,
+  resolvePlayUrl
+} from '@/utils/audioEngine'
+import logger from '@/utils/logger'
 
-let audioInstance = null
-let cleanupListenerMap = null
-
+/**
+ * 统一播放控制入口。
+ * App.vue 通过 registerHostPlayback 注册完整 playMusic / handleTrackEnd，
+ * 播放栏与 Media Session 都操作同一个 Audio 实例。
+ */
 export function useAudioPlayer() {
   const playerStore = usePlayerStore()
   const playlistStore = usePlaylistStore()
   const searchStore = useSearchStore()
   const settingsStore = useSettingsStore()
 
-  if (!audioInstance) {
-    audioInstance = new Audio()
-    audioInstance.crossOrigin = 'anonymous'
-  }
+  getAudioEl()
 
   function getRandomIndex(max) {
     return Math.floor(Math.random() * max)
   }
 
-  function getNextMusicIndex() {
-    let musicList = playlistStore.currentView === 'search' 
-      ? searchStore.searchResults 
+  function getActiveMusicList() {
+    let musicList = playlistStore.currentView === 'search'
+      ? searchStore.searchResults
       : searchStore.recommendedMusic
     if (playlistStore.currentPlaylist?.music) {
       musicList = playlistStore.currentPlaylist.music
     }
+    return musicList
+  }
 
+  function getNextMusicIndex() {
+    const musicList = getActiveMusicList()
     if (!musicList || musicList.length === 0) return -1
-
     const currentIndex = musicList.findIndex(m => m.bvid === playerStore.currentTrack?.bvid)
 
     switch (playerStore.playMode) {
       case 'single':
         return currentIndex >= 0 ? currentIndex : 0
-      case 'shuffle':
+      case 'shuffle': {
         let nextIndex
         do {
           nextIndex = getRandomIndex(musicList.length)
         } while (musicList.length > 1 && nextIndex === currentIndex)
         return nextIndex
+      }
       case 'loop':
         return currentIndex >= 0 ? (currentIndex + 1) % musicList.length : 0
       case 'order':
@@ -51,29 +67,21 @@ export function useAudioPlayer() {
     }
   }
 
-  function updateMediaSession(music, isPlaying) {
-    if (!('mediaSession' in navigator) || !music) return
-    navigator.mediaSession.metadata = new MediaMetadata({
-      title: music.title || '未知标题',
-      artist: music.author || '未知作者',
-      album: 'Pink Music',
-      artwork: [
-        {
-          src: music.cover?.startsWith('//') ? 'https:' + music.cover : (music.cover || ''),
-          sizes: '256x256',
-          type: 'image/jpeg'
-        }
-      ]
-    })
-    navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused'
+  function prefetchNext() {
+    const nextIndex = getNextMusicIndex()
+    const musicList = getActiveMusicList()
+    if (nextIndex >= 0 && musicList?.[nextIndex]) {
+      prefetchTrack(musicList[nextIndex], settingsStore.audioQuality)
+    }
   }
 
   async function playMusic(music) {
-    try {
-      if (!audioInstance.paused) {
-        audioInstance.pause()
-      }
-    } catch (error) {}
+    const hostPlay = getPlaybackRuntime().playMusic
+    if (typeof hostPlay === 'function') {
+      return hostPlay(music)
+    }
+
+    try { pauseAudio() } catch (_) {}
 
     playerStore.setCurrentTrack(music)
     playerStore.setIsPlaying(false)
@@ -82,122 +90,75 @@ export function useAudioPlayer() {
     playerStore.setDuration(music.duration || 180)
     playerStore.setCurrentTime(0)
     playerStore.setBufferedProgress(0)
-    // 不自动跳转大屏播放页：播放只让底部播放栏出现，用户需要大屏时手动点播放栏封面
-
-    let audioSrc = null
 
     try {
-      if (window.electronAPI) {
-        const musicInfoResult = await window.electronAPI.getMusicInfo(music.bvid)
-        if (musicInfoResult?.code === 0) {
-          const playUrlResult = await window.electronAPI.getMusicPlayUrl(music.bvid, music.cid || musicInfoResult.data.cid)
-          if (playUrlResult?.code === 0) {
-            audioSrc = selectAudioUrl(playUrlResult.data, settingsStore.audioQuality)
-          }
-        }
-      }
-    } catch (error) {}
-
-    if (!audioSrc) {
-      audioSrc = 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3'
-    }
-
-    if (cleanupListenerMap) {
-      Object.entries(cleanupListenerMap).forEach(([event, handler]) => {
-        try {
-          audioInstance.removeEventListener(event, handler)
-        } catch (_) {}
-      })
-    }
-
-    const listeners = {
-      loadedmetadata: () => {
-        playerStore.setDuration(audioInstance.duration || music.duration || 180)
-        playerStore.setIsAudioLoading(false)
-      },
-      timeupdate: () => {
-        if (audioInstance) {
-          playerStore.setCurrentTime(audioInstance.currentTime)
-          updateBufferedProgress()
-        }
-        updateMediaSession(music, !audioInstance.paused)
-      },
-      ended: () => {
-        playerStore.setIsPlaying(false)
-        handleTrackEnd()
-      },
-      error: (e) => {
-        playerStore.setAudioError('音频加载失败')
-        playerStore.setIsAudioLoading(false)
-      },
-      canplaythrough: () => {
-        playerStore.setIsAudioLoading(false)
-        playerStore.setBufferedProgress(100)
-      }
-    }
-
-    Object.entries(listeners).forEach(([event, handler]) => {
-      audioInstance.addEventListener(event, handler)
-    })
-    cleanupListenerMap = listeners
-
-    audioInstance.src = audioSrc
-    try {
-      await audioInstance.play()
+      await playWithResolvedSrc(music, settingsStore.audioQuality)
       playerStore.setIsPlaying(true)
+      playerStore.setIsAudioLoading(false)
       updateMediaSession(music, true)
+      prefetchNext()
     } catch (error) {
+      logger.warn('[useAudioPlayer] play failed:', error?.message)
       playerStore.setIsAudioLoading(false)
     }
   }
 
-  function updateBufferedProgress() {
-    if (audioInstance.buffered.length > 0) {
-      const bufferedEnd = audioInstance.buffered.end(audioInstance.buffered.length - 1)
-      const duration = audioInstance.duration || 1
-      playerStore.setBufferedProgress(Math.round((bufferedEnd / duration) * 100))
-    }
-  }
-
-  function handleTrackEnd() {
-    const nextIndex = getNextMusicIndex()
-    let musicList = playlistStore.currentView === 'search' 
-      ? searchStore.searchResults 
-      : searchStore.recommendedMusic
-    if (playlistStore.currentPlaylist?.music) {
-      musicList = playlistStore.currentPlaylist.music
-    }
-
-    if (nextIndex >= 0 && musicList[nextIndex]) {
-      playMusic(musicList[nextIndex])
-    } else {
-      playerStore.setIsPlaying(false)
-    }
+  /** App.vue 启动时调用：绑定完整播放链路到共享引擎 */
+  function registerHostPlayback({ playMusic: hostPlay, handleTrackEnd: hostEnd }) {
+    bindPlaybackRuntime({
+      playMusic: hostPlay,
+      handleTrackEnd: hostEnd,
+      onEnded: () => {
+        playerStore.setIsPlaying(false)
+        updateMediaSession(playerStore.currentTrack, false)
+        if (typeof hostEnd === 'function') hostEnd()
+      },
+      onError: () => {
+        playerStore.setAudioError('音频加载失败')
+        playerStore.setIsAudioLoading(false)
+        playerStore.setIsPlaying(false)
+      },
+      onLoadedMetadata: (el) => {
+        const dur = el.duration || playerStore.currentTrack?.duration || 180
+        playerStore.setDuration(dur)
+        playerStore.setIsAudioLoading(false)
+      },
+      onCanPlay: () => {
+        playerStore.setIsAudioLoading(false)
+        playerStore.setBufferedProgress(100)
+      },
+      onTime: (time, buf, flags) => {
+        if (flags?.syncStore) {
+          playerStore.setCurrentTime(time)
+        }
+        if (flags?.bufChanged) {
+          playerStore.setBufferedProgress(buf)
+        }
+      }
+    })
   }
 
   function togglePlayPause() {
-    if (!audioInstance) return
+    const audio = getAudioEl()
+    if (!audio.src && !playerStore.currentTrack) return
     if (playerStore.isPlaying) {
-      audioInstance.pause()
+      pauseAudio()
+      playerStore.setIsPlaying(false)
     } else {
-      audioInstance.play()
+      Promise.resolve(playAudio()).then(() => {
+        playerStore.setIsPlaying(true)
+      }).catch(() => {
+        playerStore.setIsPlaying(false)
+      })
     }
-    playerStore.setIsPlaying(!playerStore.isPlaying)
     updateMediaSession(playerStore.currentTrack, !playerStore.isPlaying)
   }
 
   function playPrevious() {
-    let musicList = playlistStore.currentView === 'search' 
-      ? searchStore.searchResults 
-      : searchStore.recommendedMusic
-    if (playlistStore.currentPlaylist?.music) {
-      musicList = playlistStore.currentPlaylist.music
-    }
-
+    const musicList = getActiveMusicList()
     if (!musicList.length) return
     const currentIndex = musicList.findIndex(m => m.bvid === playerStore.currentTrack?.bvid)
     let prevIndex
-
     if (playerStore.playMode === 'shuffle') {
       do {
         prevIndex = getRandomIndex(musicList.length)
@@ -205,49 +166,55 @@ export function useAudioPlayer() {
     } else {
       prevIndex = currentIndex > 0 ? currentIndex - 1 : musicList.length - 1
     }
-
-    if (musicList[prevIndex]) {
-      playMusic(musicList[prevIndex])
-    }
+    if (musicList[prevIndex]) playMusic(musicList[prevIndex])
   }
 
   function playNext() {
     const nextIndex = getNextMusicIndex()
-    let musicList = playlistStore.currentView === 'search' 
-      ? searchStore.searchResults 
-      : searchStore.recommendedMusic
-    if (playlistStore.currentPlaylist?.music) {
-      musicList = playlistStore.currentPlaylist.music
-    }
-
-    if (nextIndex >= 0 && musicList[nextIndex]) {
+    const musicList = getActiveMusicList()
+    if (nextIndex >= 0 && musicList?.[nextIndex]) {
       playMusic(musicList[nextIndex])
     }
   }
 
   function onProgressInput(event) {
     const newTime = parseFloat(event.target.value)
-    if (audioInstance && !isNaN(newTime)) {
-      audioInstance.currentTime = newTime
+    if (!Number.isNaN(newTime)) {
+      seekAudio(newTime)
       playerStore.setCurrentTime(newTime)
     }
   }
 
   function onProgressChange(event) {
     const newTime = parseFloat(event.target.value)
-    if (audioInstance && !isNaN(newTime)) {
-      audioInstance.currentTime = newTime
+    if (!Number.isNaN(newTime)) {
+      seekAudio(newTime)
       playerStore.setCurrentTime(newTime)
     }
   }
 
+  function ensureMediaSessionHandlers() {
+    setupMediaSessionHandlers({
+      onPlay: togglePlayPause,
+      onPause: togglePlayPause,
+      onNext: playNext,
+      onPrev: playPrevious
+    })
+  }
+
   return {
-    audioInstance,
+    get audioInstance() { return getAudioEl() },
     playMusic,
     togglePlayPause,
     playPrevious,
     playNext,
     onProgressInput,
-    onProgressChange
+    onProgressChange,
+    registerHostPlayback,
+    ensureMediaSessionHandlers,
+    prefetchNext,
+    resolvePlayUrl
   }
 }
+
+export { bindPlaybackRuntime, getAudioEl, prefetchTrack, resolvePlayUrl }

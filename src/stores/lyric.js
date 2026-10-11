@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { createPersistentStorage } from '@/utils/persistentStorage'
 import { s, defineSchema } from '@/utils/schema'
+import { parseLyric as parseLyricPure } from '@/utils/lrcParser'
 
 // ───────── 持久化结构改造 ─────────
 // 老版本把歌词数据分 3 个 localStorage key：
@@ -47,6 +48,10 @@ function peekLyrics() {
 
 const initial = peekLyrics() || { cache: {}, offsets: {}, sources: {} }
 
+// 并发加载去重（模块级，不进 Pinia state / 持久化）
+let _inflightKey = ''
+let _inflight = null
+
 export const useLyricStore = defineStore('lyric', {
   state: () => ({
     currentLyric: null,
@@ -74,12 +79,14 @@ export const useLyricStore = defineStore('lyric', {
       return this.currentLyric.lyrics[this.currentLineIndex]?.text || ''
     },
     lyricSourceLabel() {
-      const labels = { netease: '网易云', manual: '手动选择' }
+      const labels = { netease: '网易云', kugou: '酷狗', manual: '手动选择' }
       return labels[this.lyricSource] || ''
     },
     currentOffset() {
       if (!this.currentKey) return 0
-      return this.lyricOffsets[this.currentKey] || 0
+      const raw = this.lyricOffsets[this.currentKey]
+      const n = Number(raw)
+      return Number.isFinite(n) ? n : 0
     },
     isManualSource() {
       return this.lyricSource === 'manual'
@@ -98,11 +105,37 @@ export const useLyricStore = defineStore('lyric', {
       }
     },
 
+    /** 规范化歌词行：time 强制 number、过滤非法行、按 time 升序（保证二分查找正确） */
+    normalizeLyric(lyric) {
+      if (!lyric || typeof lyric !== 'object') return null
+      const src = Array.isArray(lyric.lyrics) ? lyric.lyrics : []
+      const lyrics = src
+        .map((line) => {
+          const time = Number(line?.time)
+          if (!Number.isFinite(time)) return null
+          return {
+            ...line,
+            time,
+            text: line.text != null ? String(line.text) : '',
+            romaji: line.romaji || '',
+            translation: line.translation || ''
+          }
+        })
+        .filter(Boolean)
+        .sort((a, b) => a.time - b.time)
+      return {
+        ...lyric,
+        lyrics,
+        _lyricV3: lyric._lyricV3 !== false
+      }
+    },
+
     setCurrentLyric(lyric) {
-      this.currentLyric = lyric
+      const normalized = this.normalizeLyric(lyric)
+      this.currentLyric = normalized
       this.currentLineIndex = -1
       this.lyricError = ''
-      this.lyricSource = ''
+      if (!normalized) this.lyricSource = ''
     },
     setLoadedHash(hash) { this.loadedHash = hash },
     setCurrentLineIndex(index) { this.currentLineIndex = index },
@@ -117,7 +150,8 @@ export const useLyricStore = defineStore('lyric', {
         console.warn('[lyricStore] setLyricOffset: currentKey 为空')
         return
       }
-      this.lyricOffsets[this.currentKey] = offset
+      const n = Number(offset)
+      this.lyricOffsets[this.currentKey] = Number.isFinite(n) ? n : 0
       this.persist()
     },
     adjustLyricOffset(delta) {
@@ -125,7 +159,8 @@ export const useLyricStore = defineStore('lyric', {
         console.warn('[lyricStore] adjustLyricOffset: currentKey 为空')
         return
       }
-      const next = (this.lyricOffsets[this.currentKey] || 0) + delta
+      const base = Number(this.lyricOffsets[this.currentKey]) || 0
+      const next = base + (Number(delta) || 0)
       this.lyricOffsets[this.currentKey] = next
       this.persist()
     },
@@ -144,24 +179,30 @@ export const useLyricStore = defineStore('lyric', {
     getCacheKey(bvid, cid, title = '', artist = '') {
       const safeTitle = String(title || '').replace(/[^\p{L}\p{N}]/gu, '').slice(0, 40)
       const safeArtist = String(artist || '').replace(/[^\p{L}\p{N}]/gu, '').slice(0, 20)
-      return `${bvid}-${cid}-${safeArtist}-${safeTitle}`
+      // cid 统一字符串化，避免 number/string 双形态导致缓存键不一致
+      return `${bvid}-${cid ?? 1}-${safeArtist}-${safeTitle}`
     },
     getCachedLyric(bvid, cid, title, artist) {
       const key = this.getCacheKey(bvid, cid, title, artist)
       const cached = this.lyricCache[key]
-      if (cached && cached.timestamp && Date.now() - cached.timestamp < 7 * 24 * 60 * 60 * 1000) {
-        const data = cached.data
-        // _lyricV3 缺失 = 旧解析器产物（romaji/translation 缺失），视为过期
-        if (data && typeof data === 'object' && !Array.isArray(data) && 'lyrics' in data && data._lyricV3) {
-          return data
-        }
-        return null
+      if (!cached) return null
+      // 用户手动指定的歌词永久有效：7 天 TTL 只约束自动抓取的缓存，
+      // 否则用户费力搜到的词会被当作过期丢弃，并被自动源覆盖。
+      const source = this.lyricSources[key] || cached.source || ''
+      const isManual = source === 'manual'
+      const fresh = cached.timestamp && Date.now() - cached.timestamp < 7 * 24 * 60 * 60 * 1000
+      if (!isManual && !fresh) return null
+      const data = this.normalizeLyric(cached.data)
+      // _lyricV3 缺失 = 旧解析器产物（romaji/translation 缺失），视为过期
+      if (data && data.lyrics.length > 0 && data._lyricV3) {
+        return data
       }
       return null
     },
     cacheLyric(bvid, cid, title, artist, lyric, source = '') {
       const key = this.getCacheKey(bvid, cid, title, artist)
-      this.lyricCache[key] = { data: lyric, timestamp: Date.now(), source }
+      const normalized = this.normalizeLyric(lyric)
+      this.lyricCache[key] = { data: normalized, timestamp: Date.now(), source }
       this.cleanupCache()
       if (source) this.lyricSources[key] = source
       this.persist()
@@ -177,8 +218,6 @@ export const useLyricStore = defineStore('lyric', {
 
     /**
      * 统一持久化：把 cache / offsets / sources 三件套作为一份 JSON 原子写。
-     * 不再额外写 localStorage 老 3 key —— 主存 + createPersistentStorage 的 localStorage 双写已足够。
-     * 老的 FALLBACK_* key 只在 peekLyrics() 第一次启动时读一次（用于历史数据兜底），之后无人再写。
      */
     async persist() {
       const payload = {
@@ -186,7 +225,6 @@ export const useLyricStore = defineStore('lyric', {
         offsets: this.lyricOffsets,
         sources: this.lyricSources
       }
-      // 主存储：1 个原子写覆盖全部
       await storage.save(payload)
     },
 
@@ -197,7 +235,6 @@ export const useLyricStore = defineStore('lyric', {
     saveSources() { this.persistSync() },
 
     async loadCache() {
-      // 兼容老 API
       await this.load()
     },
 
@@ -215,56 +252,104 @@ export const useLyricStore = defineStore('lyric', {
       delete this.lyricSources[key]
       this.persist()
       this.lyricSource = ''
+      this.loadedHash = ''
       return { success: true }
     },
 
+    /**
+     * 按 track 加载歌词。
+     * - 同 key 已有歌词 → 直接复用（避免 playMusic + LyricDisplay 双触发把歌词抹掉）
+     * - 同 key 加载中 → 合并为同一次请求
+     * - 切歌（key 变化）才清空当前歌词
+     */
     async loadLyricForTrack(track) {
-      this.setCurrentLyric(null)
-      this.setLoadedHash('')
-      this.lyricError = ''
+      if (!track) return { success: false, error: 'no track' }
       const bvid = track.bvid
-      const cid = track.cid || 1
+      const cid = track.cid ?? 1
       const title = track.title || ''
       const artist = track.author || ''
-      this.currentKey = this.getCacheKey(bvid, cid, title, artist)
-      return await this.fetchLyric(bvid, cid, title, artist)
+      const key = this.getCacheKey(bvid, cid, title, artist)
+
+      if (this.currentKey === key && this.currentLyric && this.loadedHash === key) {
+        return { success: true, fromCache: true, deduped: true }
+      }
+      if (_inflightKey === key && _inflight) {
+        return _inflight
+      }
+
+      this.currentKey = key
+      if (this.loadedHash !== key) {
+        this.setCurrentLyric(null)
+        this.setLoadedHash('')
+        this.lyricError = ''
+      }
+
+      const task = this.fetchLyric(bvid, cid, title, artist)
+      _inflightKey = key
+      _inflight = task.finally(() => {
+        if (_inflightKey === key) {
+          _inflightKey = ''
+          _inflight = null
+        }
+      })
+      return _inflight
     },
 
     async fetchLyric(bvid, cid, title, artist) {
       const cacheKey = this.getCacheKey(bvid, cid, title, artist)
       const cached = this.getCachedLyric(bvid, cid, title, artist)
       if (cached) {
+        // 过期响应防护：期间已切歌则丢弃
+        if (this.currentKey !== cacheKey) {
+          return { success: false, error: 'stale' }
+        }
         this.setCurrentLyric(cached)
         this.setLoadedHash(cacheKey)
         const source = this.lyricSources[cacheKey] || cached.source || 'auto'
         this.lyricSource = source === 'manual' ? 'manual' : 'auto'
         return { success: true, fromCache: true }
       }
+
       this.setIsLyricLoading(true)
       try {
         const result = await window.electronAPI.getLyric({ bvid, cid, title, artist })
+        // 网络返回前用户可能已切歌：key 不一致则整段丢弃，避免 A 歌词盖到 B 上
+        if (this.currentKey !== cacheKey) {
+          return { success: false, error: 'stale' }
+        }
         if (result?.code === 0 && result.data) {
-          const lyric = this.parseLyric(result.data)
+          const lyric = this.normalizeLyric(this.parseLyric(result.data))
+          if (!lyric || !lyric.lyrics.length) {
+            this.setLyricError('歌词为空')
+            return { success: false, error: 'empty lyric' }
+          }
+          // 主进程多源 fallback（netease → kugou），记录实际命中的来源
+          const source = result.source || 'netease'
           this.setCurrentLyric(lyric)
-          this.setLyricSource('netease')
+          this.setLyricSource(source)
           this.setLoadedHash(cacheKey)
-          this.cacheLyric(bvid, cid, title, artist, lyric, 'netease')
+          this.cacheLyric(bvid, cid, title, artist, lyric, source)
           return { success: true, fromCache: false }
         } else {
           this.setLyricError(result?.message || '获取歌词失败')
           return { success: false, error: result?.message }
         }
       } catch (error) {
-        this.setLyricError(error.message || '网络错误')
+        if (this.currentKey === cacheKey) {
+          this.setLyricError(error.message || '网络错误')
+        }
         return { success: false, error: error.message }
       } finally {
-        this.setIsLyricLoading(false)
+        // 只有仍是当前 key 时才关 loading，避免后发请求把先发的 loading 提前关掉
+        if (this.currentKey === cacheKey) {
+          this.setIsLyricLoading(false)
+        }
       }
     },
 
-    async searchLyric(keyword) {
+    async searchLyric(keyword, source = 'netease') {
       try {
-        const result = await window.electronAPI.searchLyric(keyword)
+        const result = await window.electronAPI.searchLyric(keyword, source)
         if (result?.code === 0 && result.data) {
           return { success: true, data: result.data }
         }
@@ -274,114 +359,39 @@ export const useLyricStore = defineStore('lyric', {
       }
     },
 
-    parseLyric(rawLyric, options = {}) {
-      // 支持新版对象格式 { lrc, rv, tv }
-      let lrcText = rawLyric
-      let rvText = ''
-      let tvText = ''
-      if (rawLyric && typeof rawLyric === 'object' && !Array.isArray(rawLyric) && 'lrc' in rawLyric) {
-        lrcText = rawLyric.lrc || ''
-        rvText = rawLyric.rv || ''
-        tvText = rawLyric.tv || ''
-      }
-      const lyrics = []
-      const lines = lrcText.split('\n')
-      let title = ''
-      let artist = ''
-      const timeRegex = /\[(\d{2}):(\d{2})\.(\d{2,3})\](.+)/
-      const titleRegex = /\[ti:(.+)\]/
-      const artistRegex = /\[ar:(.+)\]/
-      const creditRegex = /^(作词|作曲|编曲|制作人|和声编写|和声|吉他|贝斯|鼓|键盘|弦乐|录音工程|录音|混音工程|混音|母带|母带后期|母带工程|监制|OP|SP|原唱|翻唱|原曲|改编|发行|出品|封面|设计|统筹|企划)[''']?\s*[:：]/
-
-      // 把 [mm:ss.xx] 行解析成完整毫秒时间戳（与 lrc 主循环的 timeMs 同算法）
-      function lineToTimeMs(m) {
-        return parseInt(m[1]) * 60000 + parseInt(m[2]) * 1000 + parseInt(m[3].padEnd(3, '0'))
-      }
-      // 就近匹配：rv/tv 与 lrc 的时间精度可能有微小差异，精确 key 找不到时在 ±500ms 内取最近一条
-      function findTimeMatch(map, target) {
-        if (map[target]) return map[target]
-        let best = null
-        let bestDiff = Infinity
-        for (const key in map) {
-          const diff = Math.abs(key - target)
-          if (diff < bestDiff) {
-            bestDiff = diff
-            best = map[key]
-            if (diff === 0) break
-          }
-        }
-        return bestDiff <= 500 ? best : null
-      }
-
-      // 解析 rv 罗马音（可选）
-      const rvLines = rvText ? rvText.split('\n') : []
-      const rvMap = {}
-      for (const line of rvLines) {
-        const m = line.match(timeRegex)
-        if (m) {
-          rvMap[lineToTimeMs(m)] = m[4].trim()
-        }
-      }
-
-      // 解析 tv 翻译（可选）
-      const tvLines = tvText ? tvText.split('\n') : []
-      const tvMap = {}
-      for (const line of tvLines) {
-        const m = line.match(timeRegex)
-        if (m) {
-          tvMap[lineToTimeMs(m)] = m[4].trim()
-        }
-      }
-
-      for (const line of lines) {
-        const titleMatch = line.match(titleRegex)
-        if (titleMatch) { title = titleMatch[1]; continue }
-        const artistMatch = line.match(artistRegex)
-        if (artistMatch) { artist = artistMatch[1]; continue }
-        const match = line.match(timeRegex)
-        if (match) {
-          const minutes = parseInt(match[1])
-          const seconds = parseInt(match[2])
-          const milliseconds = parseInt(match[3].padEnd(3, '0'))
-          const text = match[4].trim()
-          if (text) {
-            const timeMs = minutes * 60000 + seconds * 1000 + milliseconds
-            if (creditRegex.test(text)) {
-              if (timeMs < 11000) continue
-            }
-            if (timeMs < 11000 && (
-              text.includes('·原版') || text.includes('·伴奏') ||
-              text.includes('·和声') || text.includes('·纯音乐') ||
-              text.includes('未经许可') || text.includes('未经授权') ||
-              text.includes('版权所有') || text.includes('本歌曲') ||
-              text.includes('https://') || text.includes('http://')
-            )) continue
-            lyrics.push({
-              time: timeMs,
-              text,
-              romaji: findTimeMatch(rvMap, timeMs),
-              translation: findTimeMatch(tvMap, timeMs)
-            })
-          }
-        }
-      }
-      lyrics.sort((a, b) => a.time - b.time)
-      // _lyricV3 标记：新解析器（rv/tv 完整时间戳匹配 + 主进程 romalrc 字段修复）产出的结果。
-      // getCachedLyric 用该标记识别"旧 Bug 解析器产出的缓存"（romaji/translation 缺失），
-      // 命中旧缓存视为过期重新拉取，否则修复后已缓存的歌仍然切不出翻译/罗马音。
-      return { lyrics, title, artist, _lyricV3: true }
+    parseLyric(rawLyric) {
+      return this.normalizeLyric(parseLyricPure(rawLyric))
     },
 
+    /**
+     * 二分定位当前行。歌词已按 time 升序（normalizeLyric 保证）。
+     * offset / time 都做 Number 归一，避免历史脏数据（字符串）导致定位错乱。
+     */
     updateCurrentLine(currentTime) {
       if (!this.hasLyric) { this.currentLineIndex = -1; return }
-      const offset = this.currentOffset
-      const adjustedTime = currentTime * 1000 + offset
       const lyrics = this.currentLyric.lyrics
+      if (!lyrics.length) { this.currentLineIndex = -1; return }
+
+      const t = Number(currentTime)
+      if (!Number.isFinite(t)) { this.currentLineIndex = -1; return }
+
+      const offset = Number(this.currentOffset) || 0
+      const target = t * 1000 + offset + 500
+      let lo = 0
+      let hi = lyrics.length - 1
       let index = -1
-      for (let i = lyrics.length - 1; i >= 0; i--) {
-        if (lyrics[i].time <= adjustedTime + 500) { index = i; break }
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1
+        const lineTime = Number(lyrics[mid]?.time)
+        if (Number.isFinite(lineTime) && lineTime <= target) {
+          index = mid
+          lo = mid + 1
+        } else {
+          hi = mid - 1
+        }
       }
       this.currentLineIndex = index
     }
   }
 })
+

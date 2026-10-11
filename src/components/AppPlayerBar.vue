@@ -2,7 +2,7 @@
 import { ref } from 'vue'
 import { usePlayerStore, usePlaylistStore } from '@/stores'
 import { useAudioPlayer } from '@/composables/useAudioPlayer'
-import { parseDuration } from '@/utils/bilibili'
+import { parseDuration, fixCoverUrl } from '@/utils/bilibili'
 
 const playerStore = usePlayerStore()
 const playlistStore = usePlaylistStore()
@@ -23,11 +23,16 @@ function openAddToPlaylist() {
   }
 }
 
-function addToPlaylist(playlist) {
+async function addToPlaylist(playlist) {
   if (!playerStore.currentTrack || !playlist) return
   // store 签名是 addToPlaylist(music, targetPlaylist)，注意参数顺序
-  playlistStore.addToPlaylist(playerStore.currentTrack, playlist)
-  playlistStore.setShowAddToPlaylistModal(false)
+  try {
+    await playlistStore.addToPlaylist(playerStore.currentTrack, playlist)
+    playlistStore.setShowAddToPlaylistModal(false)
+  } catch (e) {
+    console.warn('[addToPlaylist] 保存失败:', e.message)
+    alert('添加到歌单失败，请稍后重试')
+  }
 }
 </script>
 
@@ -35,7 +40,7 @@ function addToPlaylist(playlist) {
   <div v-if="playerStore.currentTrack" class="player-bar">
     <div class="current-track">
       <button class="current-cover-btn" @click="openPlayerPage">
-        <img :src="playerStore.currentTrack.cover" :alt="playerStore.currentTrack.title" class="current-cover" @error="$event.target.src='https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=400'">
+        <img :src="fixCoverUrl(playerStore.currentTrack.cover)" :alt="playerStore.currentTrack.title" class="current-cover" @error="$event.target.src='https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=400'" loading="lazy" decoding="async"
         <div class="cover-overlay">
           <svg viewBox="0 0 24 24" fill="white" width="24" height="24"><path d="M8 5v14l11-7z"/></svg>
         </div>

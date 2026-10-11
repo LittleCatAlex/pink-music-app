@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
-import { useUserStore, usePlayerStore, usePlaylistStore, useSettingsStore, useThemeStore } from '../stores'
+import { useUserStore, usePlayerStore, usePlaylistStore, useSettingsStore, useThemeStore, useUpdateStore } from '../stores'
 import { parseDuration } from '../utils/bilibili'
 import { EQ_BANDS, EQ_PRESET_KEYS, EQ_PRESET_LABELS, EQ_DB_MIN, EQ_DB_MAX } from '../utils/audioEQ'
 
@@ -9,6 +9,188 @@ const playerStore = usePlayerStore()
 const playlistStore = usePlaylistStore()
 const settingsStore = useSettingsStore()
 const themeStore = useThemeStore()
+const updateStore = useUpdateStore()
+
+// ============== 版本更新检查 ==============
+const showUpdateModal = ref(false)
+
+async function checkUpdate() {
+  console.log('[checkUpdate] electronAPI.checkForUpdate 可用:', !!window.electronAPI?.checkForUpdate)
+  const res = await updateStore.check(true)
+  if (res && res.code === 0 && res.hasUpdate) {
+    showUpdateModal.value = true
+  } else if (res && res.code === 0) {
+    alert('已是最新版本')
+  } else if (res) {
+    alert(updateStore.error || '检查更新失败，请稍后重试')
+  } else {
+    // 并发检查中（上一次尚未结束）或异常返回，避免点击后毫无反馈
+    alert(updateStore.error || '正在检查中，请稍候')
+  }
+}
+
+function openReleasePage() {
+  showUpdateModal.value = false
+  updateStore.openReleases()
+}
+
+function formatPublishedAt(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+// ============== 桌面歌词全局快捷键：录制与设置 ==============
+const DESKTOP_LYRICS_HOTKEY_DEFAULT = 'CommandOrControl+D'   // 与 main.js / schema v7 默认值互指
+const HOTKEY_MODIFIERS = new Set(['Command', 'Cmd', 'Control', 'Ctrl', 'CommandOrControl', 'CmdOrCtrl', 'Alt', 'Option', 'AltGr', 'Shift', 'Super'])
+const IS_MAC = /Mac|iPod|iPhone|iPad/.test(navigator.platform || '')
+
+const hotkeyRecording = ref(false)
+const hotkeyPreview = ref('')
+const hotkeyConflict = ref(false)
+const hotkeyNeedModifier = ref(false)
+let draftMods = []
+let draftKey = ''
+
+function normalizeKeyName(e) {
+  const k = e.key
+  if (/^[a-zA-Z]$/.test(k)) return k.toUpperCase()
+  if (/^[0-9]$/.test(k)) return k
+  const fMatch = /^F([1-9]|1[0-9]|2[0-4])$/.exec(k)
+  if (fMatch) return k
+  const named = {
+    ' ': 'Space', 'Escape': 'Esc', 'Enter': 'Return', 'ArrowUp': 'Up',
+    'ArrowDown': 'Down', 'ArrowLeft': 'Left', 'ArrowRight': 'Right',
+    'Backspace': 'Backspace', 'Delete': 'Delete', 'Insert': 'Insert',
+    'Home': 'Home', 'End': 'End', 'PageUp': 'PageUp', 'PageDown': 'PageDown',
+    'Tab': 'Tab', '+': 'Plus'
+  }
+  return named[k] || null
+}
+
+/** Electron accelerator → 平台友好显示 */
+function formatHotkey(accel) {
+  if (!accel) return ''
+  const prettyKey = (part) => {
+    if (!IS_MAC) return part === 'CommandOrControl' || part === 'CmdOrCtrl' ? 'Ctrl' : part
+    switch (part) {
+      case 'CommandOrControl': case 'CmdOrCtrl': case 'Command': case 'Cmd': case 'Control': case 'Ctrl':
+        return '⌘'
+      case 'Alt': case 'Option':
+        return '⌥'
+      case 'Shift':
+        return '⇧'
+      case 'Super':
+        return '⌘'
+      default:
+        return part
+    }
+  }
+  const parts = accel.split('+')
+  const key = parts.pop()
+  return parts.map(prettyKey).join(IS_MAC ? '' : '+') + (IS_MAC ? '' : '+') + key
+}
+
+/** 把当前按下的修饰键/按键组装成 accelerator 字符串与友好预览 */
+function buildAccelString() {
+  const parts = []
+  if (draftMods.includes('Meta')) parts.push(IS_MAC ? 'CommandOrControl' : 'Super')
+  if (draftMods.includes('Control') && !(draftMods.includes('Meta'))) {
+    // mac 上 ⌘ 已映射为 CommandOrControl；mac 实体 Ctrl 单独映射 Control
+    parts.push(IS_MAC ? 'Control' : 'CommandOrControl')
+  }
+  if (draftMods.includes('Alt')) parts.push('Alt')
+  if (draftMods.includes('Shift')) parts.push('Shift')
+  const unique = [...new Set(parts)]
+  if (!draftKey) {
+    return {
+      accel: '',
+      preview: unique.length ? formatHotkey(unique.join('+') + '+…') : ''
+    }
+  }
+  const accel = unique.join('+') + '+' + draftKey
+  return { accel, preview: formatHotkey(accel) }
+}
+
+function updateHotkeyPreview() {
+  const { preview } = buildAccelString()
+  hotkeyPreview.value = preview
+}
+
+async function onHotkeyKeydown(e) {
+  e.preventDefault()
+  e.stopPropagation()
+  if (e.key === 'Escape') { stopHotkeyRecording(); return }
+
+  // 收集按下的修饰键（keydown 期间持续跟踪）
+  draftMods = []
+  if (e.metaKey) draftMods.push('Meta')
+  if (e.ctrlKey) draftMods.push('Control')
+  if (e.altKey) draftMods.push('Alt')
+  if (e.shiftKey) draftMods.push('Shift')
+
+  const isModifierOnly = ['Meta', 'Control', 'Alt', 'Shift', 'AltGraph', 'CapsLock', 'Fn'].includes(e.key)
+  if (isModifierOnly) {
+    draftKey = ''
+    hotkeyNeedModifier.value = false
+    updateHotkeyPreview()
+    return
+  }
+
+  const keyName = normalizeKeyName(e)
+  if (!keyName) { updateHotkeyPreview(); return }   // 不支持的按键，仅刷新预览
+  draftKey = keyName
+
+  // 校验：至少一个修饰键（与服务端 validateAccelerator 同规则）
+  const { accel } = buildAccelString()
+  const hasModifier = accel.split('+').slice(0, -1).some(p => HOTKEY_MODIFIERS.has(p))
+  if (!hasModifier) {
+    hotkeyNeedModifier.value = true
+    updateHotkeyPreview()
+    return
+  }
+  hotkeyNeedModifier.value = false
+  await commitHotkey(accel)
+}
+
+async function commitHotkey(accel) {
+  try {
+    const res = await window.desktopLyricsAPI?.setLyricsHotkey?.(accel)
+    if (res && res.ok) {
+      settingsStore.setDesktopLyricsHotkey(res.accel || accel)
+      hotkeyConflict.value = false
+      stopHotkeyRecording()
+    } else {
+      // 冲突或非法：主进程已回滚旧键，提示并退出录制态
+      hotkeyConflict.value = true
+      stopHotkeyRecording()
+    }
+  } catch (_) {
+    hotkeyConflict.value = true
+    stopHotkeyRecording()
+  }
+}
+
+function startHotkeyRecording() {
+  hotkeyConflict.value = false
+  hotkeyNeedModifier.value = false
+  draftMods = []
+  draftKey = ''
+  hotkeyPreview.value = ''
+  hotkeyRecording.value = true
+  window.addEventListener('keydown', onHotkeyKeydown, true)
+  window.addEventListener('blur', stopHotkeyRecording)
+}
+function stopHotkeyRecording() {
+  hotkeyRecording.value = false
+  window.removeEventListener('keydown', onHotkeyKeydown, true)
+  window.removeEventListener('blur', stopHotkeyRecording)
+}
+async function resetHotkey() {
+  await commitHotkey(DESKTOP_LYRICS_HOTKEY_DEFAULT)
+  hotkeyConflict.value = false
+}
 
 // 主题模式与主题颜色：与侧边栏的旧主题面板合并迁移到此处
 // 切换即写 localStorage + 更新 <html data-theme / data-color>，与 themeStore 保持唯一来源
@@ -251,12 +433,15 @@ defineExpose({
 onMounted(() => {
   getCurrentDownloadDirectory()
   calculateCacheSize()
+  updateStore.loadVersion()
   // 监听顶栏"主题设置"按钮派发的全局事件：切到 settings tab
   window.addEventListener('pink-music:open-settings', handleOpenSettings)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('pink-music:open-settings', handleOpenSettings)
+  // 快捷键录制监听兜底清理（组件卸载时若仍在录制）
+  if (hotkeyRecording.value) stopHotkeyRecording()
 })
 
 function handleOpenSettings() {
@@ -294,8 +479,7 @@ function handleOpenSettings() {
             :src="userStore.userInfo.face"
             class="profile-avatar"
             :alt="userStore.userInfo.uname"
-            @error="$event.target.style.display='none'"
-          />
+            @error="$event.target.style.display='none'" loading="lazy" decoding="async" />
           <div class="profile-detail">
             <h3>{{ userStore.userInfo.uname }}</h3>
             <p>UID: {{ userStore.userInfo.mid }}</p>
@@ -383,8 +567,7 @@ function handleOpenSettings() {
             :src="music.cover"
             :alt="music.title"
             class="history-cover"
-            @error="$event.target.src='https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=100'"
-          />
+            @error="$event.target.src='https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=100'" loading="lazy" decoding="async" />
           <div class="history-info">
             <h4>{{ music.title }}</h4>
             <p>{{ music.author }}</p>
@@ -653,7 +836,31 @@ function handleOpenSettings() {
             </select>
           </div>
         </div>
-        <p class="setting-hint">主行始终显示原文，选中的罗马音/翻译以小字附注在原文下方。部分歌曲可能没有罗马音或翻译数据，将自动只显示原文。</p>
+
+        <!-- 桌面歌词全局快捷键 -->
+        <div class="setting-item">
+          <div class="setting-label-with-hint">
+            <label>桌面歌词快捷键</label>
+            <span class="setting-hint">全局生效，应用未聚焦时也可开关桌面歌词；需包含至少一个修饰键（如 Shift）</span>
+          </div>
+          <div class="setting-value hotkey-control">
+            <template v-if="!hotkeyRecording">
+              <kbd class="hotkey-display" :class="{ 'is-conflict': hotkeyConflict }">{{ formatHotkey(settingsStore.desktopLyricsHotkey) }}</kbd>
+              <button class="btn-secondary" @click="startHotkeyRecording">修改</button>
+              <button
+                v-if="settingsStore.desktopLyricsHotkey !== 'CommandOrControl+D'"
+                class="btn-secondary"
+                @click="resetHotkey"
+              >恢复默认</button>
+            </template>
+            <template v-else>
+              <kbd class="hotkey-display is-recording">{{ hotkeyPreview || '按下新组合…' }}</kbd>
+              <span class="hotkey-tip">Esc 取消{{ hotkeyNeedModifier ? ' · 需要至少一个修饰键' : '' }}</span>
+            </template>
+          </div>
+        </div>
+        <p v-if="hotkeyConflict" class="setting-hint hotkey-error">该快捷键可能已被其他应用占用，已保留原快捷键，请换一个组合。</p>
+        <p class="setting-hint">主行始终显示原文，选中的罗马音/翻译以小字附注在原文下方。部分歌曲可能没有罗马音或翻译数据，将自动只显示原文。桌面歌词同样跟随此设置。</p>
       </div>
 
       <div class="settings-section glass-card">
@@ -690,9 +897,49 @@ function handleOpenSettings() {
         <div class="about-content">
           <div class="about-header">
             <span class="logo-text">Pink Music</span>
-            <span class="version">v2.5.0</span>
+            <span class="version">v{{ updateStore.currentVersion || '—' }}</span>
           </div>
           <p class="about-desc">一款优雅的 B 站音乐播放器，让你发现并享受喜欢的音乐。</p>
+          <div class="update-row">
+            <button
+              class="btn-secondary"
+              :disabled="updateStore.status === 'checking'"
+              @click="checkUpdate"
+            >
+              {{ updateStore.status === 'checking' ? '检查中...' : '检查更新' }}
+            </button>
+            <button
+              v-if="updateStore.hasUpdate"
+              class="btn-primary"
+              @click="showUpdateModal = true"
+            >
+              查看新版本 v{{ updateStore.latestVersion }}
+            </button>
+            <span
+              v-if="updateStore.statusText"
+              class="update-status"
+              :class="{ 'is-available': updateStore.hasUpdate, 'is-error': updateStore.status === 'error' }"
+            >{{ updateStore.statusText }}</span>
+          </div>
+          <div class="setting-item">
+            <div class="setting-label-with-hint">
+              <label>启动时自动检查更新</label>
+              <span class="setting-hint">应用启动后自动检查是否有新版本</span>
+            </div>
+            <div class="setting-value">
+              <label
+                class="switch"
+                :title="settingsStore.checkUpdateOnStartup ? '关闭自动检查' : '开启自动检查'"
+              >
+                <input
+                  type="checkbox"
+                  :checked="settingsStore.checkUpdateOnStartup"
+                  @change="settingsStore.setCheckUpdateOnStartup($event.target.checked)"
+                >
+                <span class="slider"></span>
+              </label>
+            </div>
+          </div>
           <button class="btn-secondary" @click="openGitHub">
             <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
               <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
@@ -713,6 +960,22 @@ function handleOpenSettings() {
         <div class="modal-buttons">
           <button class="btn-secondary" @click="showClearCacheConfirm = false">取消</button>
           <button class="btn-danger" @click="clearCache">确认清理</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 新版本发行说明 -->
+    <div v-if="showUpdateModal" class="modal-overlay" @click="showUpdateModal = false">
+      <div class="modal update-modal" @click.stop>
+        <h2>发现新版本 v{{ updateStore.latestVersion }}</h2>
+        <p class="update-modal-meta">
+          <span>当前版本 v{{ updateStore.currentVersion }}</span>
+          <span v-if="formatPublishedAt(updateStore.publishedAt)">发布于 {{ formatPublishedAt(updateStore.publishedAt) }}</span>
+        </p>
+        <div class="release-notes" v-html="updateStore.notesHtml"></div>
+        <div class="modal-buttons">
+          <button class="btn-secondary" @click="showUpdateModal = false">稍后</button>
+          <button class="btn-primary" @click="openReleasePage">前往下载</button>
         </div>
       </div>
     </div>

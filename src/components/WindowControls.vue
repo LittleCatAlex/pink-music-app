@@ -93,8 +93,9 @@ function onBtnMouseDown(e) {
       @click="minimizeWindow"
       @mousedown="onBtnMouseDown"
     >
-      <svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true">
-        <line x1="1" y1="5" x2="9" y2="5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+      <!-- 横线垂直居中，与最大化/关闭图标的视觉重心一致 -->
+      <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
+        <path d="M2.5 6 H9.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
       </svg>
     </button>
     <button
@@ -105,13 +106,14 @@ function onBtnMouseDown(e) {
       @click="toggleMaximize"
       @mousedown="onBtnMouseDown"
     >
-      <!-- 最大化：方框；已最大化：两个重叠方框表示还原 -->
-      <svg v-if="!isMaximized" viewBox="0 0 10 10" width="10" height="10" aria-hidden="true">
-        <rect x="1.25" y="1.25" width="7.5" height="7.5" fill="none" stroke="currentColor" stroke-width="1.2" />
+      <!-- 最大化：圆角方框 -->
+      <svg v-if="!isMaximized" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
+        <rect x="2.5" y="2.5" width="7" height="7" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.3" />
       </svg>
-      <svg v-else viewBox="0 0 10 10" width="10" height="10" aria-hidden="true">
-        <rect x="1.5" y="3" width="5.5" height="5.5" fill="none" stroke="currentColor" stroke-width="1.1" />
-        <path d="M3 3 V1.5 H8 V6.5 H6.5" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round" />
+      <!-- 还原：前方圆角框 + 右上后框（仅画可见的顶边与右边，避免交叠穿线） -->
+      <svg v-else viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
+        <path d="M4.25 2.25 H9.75 V7.75" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" />
+        <rect x="1.75" y="4.75" width="6.5" height="6.5" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.3" />
       </svg>
     </button>
     <button
@@ -122,9 +124,8 @@ function onBtnMouseDown(e) {
       @click="closeWindow"
       @mousedown="onBtnMouseDown"
     >
-      <svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true">
-        <line x1="1.5" y1="1.5" x2="8.5" y2="8.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
-        <line x1="8.5" y1="1.5" x2="1.5" y2="8.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+      <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
+        <path d="M3.5 3.5 L8.5 8.5 M8.5 3.5 L3.5 8.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
       </svg>
     </button>
   </div>
@@ -174,16 +175,28 @@ function onBtnMouseDown(e) {
 
 .control-btn.close:hover {
   background: var(--error-color);
-  color: var(--text-primary);
+  color: #fff;
+}
+
+.control-btn.close:active {
+  background: var(--error-color);
+  color: #fff;
+  filter: brightness(0.88);
 }
 
 .control-btn svg {
   display: block;
-  opacity: 0.9;
+  opacity: 0.85;
+  transition: transform 0.18s ease, opacity 0.15s ease;
 }
 
 .control-btn:hover svg {
   opacity: 1;
+  transform: scale(1.08);
+}
+
+.control-btn:active svg {
+  transform: scale(0.95);
 }
 
 /* 浅色模式：默认色用更深的灰色，与白底对比 */
@@ -196,6 +209,11 @@ function onBtnMouseDown(e) {
 }
 :global([data-theme="light"]) .control-btn.close:hover {
   background: var(--error-color);
-  color: var(--text-primary);
+  color: #fff;
+}
+:global([data-theme="light"]) .control-btn.close:active {
+  background: var(--error-color);
+  color: #fff;
+  filter: brightness(0.88);
 }
 </style>

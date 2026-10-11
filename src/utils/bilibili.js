@@ -10,6 +10,12 @@ class BilibiliAPI {
     ]
   }
 
+  _devLog(...args) {
+    try {
+      if (import.meta?.env?.DEV) console.log(...args)
+    } catch (_) { /* production: silence */ }
+  }
+
   getDefaultCover(index = 0) {
     return this.defaultCovers[index % this.defaultCovers.length]
   }
@@ -32,7 +38,7 @@ class BilibiliAPI {
     try {
       if (window.electronAPI) {
         const result = await window.electronAPI.searchMusic(keyword, page, pageSize)
-        console.log('搜索结果原始返回:', JSON.stringify(result)?.substring(0, 1000))
+        this._devLog('搜索结果 code:', result?.code)
 
         if (result.code === 0 && result.data?.result) {
           const videoResult = result.data.result.find(item => item.result_type === 'video')
@@ -128,7 +134,7 @@ class BilibiliAPI {
   async getMusicInfo(bvid) {
     try {
       const result = await window.electronAPI.getMusicInfo(bvid)
-      console.log('获取音乐信息原始返回:', JSON.stringify(result)?.substring(0, 500))
+      this._devLog('获取音乐信息 code:', result?.code, 'bvid:', bvid)
       if (result.code === 0) {
         const item = result.data
         return {
@@ -160,42 +166,42 @@ class BilibiliAPI {
 
   async getMusicPlayUrl(bvid, cid) {
     try {
-      console.log('开始获取播放地址:', bvid, cid)
+      this._devLog('开始获取播放地址:', bvid, cid)
       const result = await window.electronAPI.getMusicPlayUrl(bvid, cid)
-      console.log('获取播放地址原始返回:', JSON.stringify(result)?.substring(0, 1000))
+      this._devLog('获取播放地址 code:', result?.code)
       if (result.code === 0) {
         if (result.data?.durl?.[0]?.url) {
-          console.log('使用durl格式的音频地址')
+          this._devLog('使用durl格式的音频地址')
           return {
             success: true,
             url: result.data.durl[0].url
           }
         } else if (result.data?.data?.durl?.[0]?.url) {
-          console.log('使用data.durl格式的音频地址')
+          this._devLog('使用data.durl格式的音频地址')
           return {
             success: true,
             url: result.data.data.durl[0].url
           }
         } else if (result.data?.url) {
-          console.log('使用url格式的音频地址')
+          this._devLog('使用url格式的音频地址')
           return {
             success: true,
             url: result.data.url
           }
         } else if (result.data?.dash?.audio?.[0]?.baseUrl) {
-          console.log('使用dash.audio.baseUrl格式的音频地址')
+          this._devLog('使用dash.audio.baseUrl格式的音频地址')
           return {
             success: true,
             url: result.data.dash.audio[0].baseUrl
           }
         } else if (result.data?.dash?.audio?.[0]?.url) {
-          console.log('使用dash.audio.url格式的音频地址')
+          this._devLog('使用dash.audio.url格式的音频地址')
           return {
             success: true,
             url: result.data.dash.audio[0].url
           }
         } else {
-          console.error('未找到音频地址，数据结构:', JSON.stringify(result.data))
+          console.error('未找到音频地址, code:', result?.code)
         }
       }
       console.error('获取播放地址失败:', result.message || '未知错误')
@@ -225,7 +231,7 @@ class BilibiliAPI {
   async getVideoSeries(bvid) {
     try {
       const result = await window.electronAPI.getVideoSeries(bvid)
-      console.log('获取视频合集原始返回:', JSON.stringify(result)?.substring(0, 500))
+      this._devLog('获取视频合集 code:', result?.code)
       if (result.code === 0 && result.data) {
         const seriesData = result.data
         return {
@@ -294,7 +300,7 @@ class BilibiliAPI {
   async getRecommendations() {
     try {
       const result = await window.electronAPI.getRecommendations()
-      console.log('获取推荐内容原始返回:', JSON.stringify(result)?.substring(0, 500))
+      this._devLog('获取推荐内容 code:', result?.code)
       if (result.code === 0 && result.data?.item) {
         return {
           success: true,

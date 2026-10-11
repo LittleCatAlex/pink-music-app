@@ -33,6 +33,12 @@ const searchError = ref('')
 const showSearchPanel = ref(false)
 const selectedIndex = ref(0)
 const selectingLyricId = ref(null)
+// 歌词来源切换：netease | kugou
+const searchSource = ref('netease')
+const SOURCE_TABS = [
+  { key: 'netease', label: '网易云' },
+  { key: 'kugou', label: '酷狗' },
+]
 const searchInputRef = ref(null)
 
 // === 手动滚动状态 ===
@@ -121,26 +127,35 @@ watch(() => props.currentTime, (newTime) => {
   if (timeUpdateThrottle) return
   timeUpdateThrottle = true
   requestAnimationFrame(() => {
-    lyricStore.updateCurrentLine(newTime)
+    lyricStore.updateCurrentLine(props.currentTime)
     timeUpdateThrottle = null
   })
 })
 
+// 歌词加载完成后立刻按当前进度定位（避免暂停时加载完高亮停在 -1）
+watch(
+  () => [lyricStore.currentLyric, lyricStore.loadedHash],
+  () => {
+    if (!lyricStore.hasLyric || isManualScrolling.value) return
+    lyricStore.updateCurrentLine(props.currentTime)
+  }
+)
+
 // === 切换歌曲 ===
 // 用 immediate:true 防止"先点播、后开大屏"场景下 currentKey 永远为空，
 // 导致微调/重置按钮静默失效。
+// loadLyricForTrack 内部已做同 key 去重 + in-flight 合并，这里重复调用是安全的。
 watch(
   () => playerStore.currentTrack,
   async (newTrack) => {
     if (!newTrack) return
-    // 同一首歌且歌词已就绪 → 跳过，避免 remount 闪烁
     const newKey = lyricStore.getCacheKey(
       newTrack.bvid,
-      newTrack.cid || 1,
+      newTrack.cid ?? 1,
       newTrack.title || '',
       newTrack.author || ''
     )
-    if (lyricStore.currentKey === newKey && lyricStore.currentLyric) return
+    if (lyricStore.currentKey === newKey && lyricStore.currentLyric && lyricStore.loadedHash === newKey) return
     await lyricStore.loadLyricForTrack(newTrack)
   },
   { immediate: true }
@@ -237,7 +252,7 @@ async function handleSearch() {
   searchError.value = ''
   selectedIndex.value = 0
   try {
-    const result = await lyricStore.searchLyric(kw)
+    const result = await lyricStore.searchLyric(kw, searchSource.value)
     if (result.success && result.data) {
       searchResults.value = result.data
       if (result.data.length === 0) searchError.value = '未找到相关歌词'
@@ -286,9 +301,13 @@ function scrollSelectedIntoView() {
 
 async function selectLyric(song) {
   if (!song) return
-  selectingLyricId.value = song.id
+  const busyKey = `${song.source || 'netease'}-${song.id}`
+  selectingLyricId.value = busyKey
   try {
-    const result = await window.electronAPI.getLyricById(song.id)
+    // IPC 走结构化克隆，不能直接传 Vue 响应式对象（Proxy 无法克隆会上报错）
+    // 这里只挑主进程需要的字段构造普通对象；kugou 需 hash 定位 KRC
+    const payload = { source: song.source || 'netease', id: song.id, hash: song.hash }
+    const result = await window.electronAPI.getLyricById(payload)
     if (result?.code === 0 && result.data) {
       const lyric = lyricStore.parseLyric(result.data)
       lyricStore.setCurrentLyric(lyric)
@@ -296,23 +315,25 @@ async function selectLyric(song) {
       const track = playerStore.currentTrack
       lyricStore.cacheLyric(
         track?.bvid || '',
-        track?.cid || '1',
+        track?.cid ?? 1,
         track?.title || '',
         track?.author || '',
         lyric,
         'manual'
       )
+      // 手动换词后立刻按当前进度高亮
+      lyricStore.updateCurrentLine(props.currentTime)
       closeSearch()
     } else {
       searchError.value = result?.message || '获取歌词失败'
     }
-  } catch {
-    searchError.value = '网络错误'
+  } catch (error) {
+    console.error('selectLyric error:', error)
+    searchError.value = error?.message || '网络错误'
   } finally {
     selectingLyricId.value = null
   }
 }
-
 // 恢复默认歌词（清除手动选择）
 async function handleResetManual() {
   const track = playerStore.currentTrack
@@ -506,6 +527,15 @@ function getSubLines(line) {
           <button class="search-go" @click="handleSearch" :disabled="isSearching">搜索</button>
           <button class="search-close" @click="closeSearch" title="关闭（Esc）">✕</button>
         </div>
+        <div class="source-tabs">
+          <button
+            v-for="tab in SOURCE_TABS"
+            :key="tab.key"
+            class="source-tab"
+            :class="{ active: searchSource === tab.key }"
+            @click="searchSource = tab.key"
+          >{{ tab.label }}</button>
+        </div>
         <div class="search-hint">↑↓ 选择 · Enter 确认 · Esc 关闭</div>
 
         <div v-if="isSearching" class="search-state">搜索中…</div>
@@ -513,9 +543,9 @@ function getSubLines(line) {
         <div v-else class="search-results">
           <button
             v-for="(song, i) in searchResults"
-            :key="song.id"
+            :key="`${song.source || 'netease'}-${song.id}`"
             class="search-item"
-            :class="{ active: selectedIndex === i, busy: selectingLyricId === song.id }"
+            :class="{ active: selectedIndex === i, busy: selectingLyricId === `${song.source || 'netease'}-${song.id}` }"
             :disabled="selectingLyricId !== null"
             @click="selectLyric(song)"
             @mouseenter="selectedIndex = i"
@@ -952,6 +982,30 @@ function getSubLines(line) {
   color: var(--text-muted);
   margin-bottom: 6px;
   letter-spacing: 0.3px;
+}
+
+/* ===== 歌词来源切换 tab ===== */
+.source-tabs {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+  margin-bottom: 6px;
+}
+.source-tab {
+  border: 1px solid var(--border-color);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.source-tab:hover { color: var(--text-primary); }
+.source-tab.active {
+  background: var(--primary-color);
+  border-color: var(--primary-color);
+  color: var(--text-primary);
 }
 
 .search-state {

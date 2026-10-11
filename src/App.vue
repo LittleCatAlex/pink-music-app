@@ -1,20 +1,34 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed, watch, nextTick } from 'vue'
 import { parseDuration, formatPlayCount, fixCoverUrl } from './utils/bilibili.js'
-import { selectAudioUrl, selectAudioInfo } from './utils/audio.js'
-import { attachAudioAnalyser } from './utils/audioAnalyser'
 import WindowControls from './components/WindowControls.vue'
 import AppDock from './components/AppDock.vue'
 import MineView from './components/MineView.vue'
 import LyricDisplay from './components/player/LyricDisplay.vue'
 import AudioVisualizer from './components/AudioVisualizer.vue'
 import AlbumRipple from './components/AlbumRipple.vue'
-import { useLyricStore, usePlayerStore, useSettingsStore, useDownloadStore, useUserStore, usePlaylistStore, useThemeStore } from './stores'
+import { useLyricStore, usePlayerStore, useSettingsStore, useDownloadStore, useUserStore, usePlaylistStore, useThemeStore, useUpdateStore } from './stores'
 import DownloadManager from './components/DownloadManager.vue'
 import LoginPanel from './components/LoginPanel.vue'
+import OnboardingGuide from './components/OnboardingGuide.vue'
 import { applyLiquidGlass, destroyLiquidGlass } from './composables/useLiquidGlass'
+import { useDesktopLyrics } from './composables/useDesktopLyrics'
+import { useAudioPlayer } from './composables/useAudioPlayer'
+import {
+  getAudioEl,
+  bindPlaybackRuntime,
+  playWithResolvedSrc,
+  pauseAudio,
+  playAudio,
+  seekAudio,
+  updateMediaSession,
+  prefetchTrack,
+  computeBufferedPercent
+} from './utils/audioEngine'
+import { resolvePlaySource } from './utils/playUrlCache'
 import { appConfirm } from './utils/confirm'
 import { flushPendingLocalWrites } from './utils/persistentStorage'
+import logger from './utils/logger'
 
 // flush 协议相关：保存 IPC 监听器反注册函数，HMR 时清理旧监听器，避免重复注册
 let unregisterFlushListener = null
@@ -36,35 +50,16 @@ const downloadStore = useDownloadStore()
 const userStore = useUserStore()
 const playlistStore = usePlaylistStore()
 const themeStore = useThemeStore()
+const updateStore = useUpdateStore()
 
 // Helper function to strip HTML tags
 function stripHtmlTags(html) {
   return html.replace(/<[^>]*>/g, '');
 }
 
-
-// Media Session API for system media controls
-function updateMediaSession() {
-  if (!('mediaSession' in navigator)) return;
-  
-  const music = currentTrack.value;
-  if (!music) return;
-  
-  navigator.mediaSession.metadata = new MediaMetadata({
-    title: music.title || '未知标题',
-    artist: music.author || '未知作者',
-    album: 'Pink Music',
-    artwork: [
-      {
-        src: fixCoverUrl(music.cover) || '',
-        sizes: '256x256',
-        type: 'image/jpeg'
-      }
-    ]
-  });
-  
-  // Update playback state
-  navigator.mediaSession.playbackState = isPlaying.value ? 'playing' : 'paused';
+// Media Session 由 audioEngine.updateMediaSession 统一维护（避免 timeupdate 里高频刷新）
+function syncMediaSession() {
+  updateMediaSession(currentTrack.value, isPlaying.value)
 }
 
 function setupMediaSessionHandlers() {
@@ -121,7 +116,6 @@ const coverBgUrl = computed(() => {
   return raw || 'https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=1200'
 })
 const isPlaying = ref(false)
-const audioElement = ref(null)
 const currentTime = ref(0)
 const duration = ref(0)
 const isSeeking = ref(false)
@@ -664,7 +658,7 @@ function isCurrentPlaylist(playlist) {
 
 /**
  * 批量把歌曲写入目标歌单（共享逻辑）：
- * - 去重规则：bvid+cid 同时匹配才判重（与 store addToPlaylist 一致）
+ * - 去重规则：bvid 必须匹配；cid 同时存在时才要求一致（与 store addToPlaylist 一致）
  * - 通过 userPlaylists 整体替换数组引用触发响应式，然后持久化
  * - 逻辑直接在 UI 组件里执行，避开 Pinia store action HMR 不热更的坑
  * @param {Array} tracks 要添加的歌曲数组（会浅拷贝）
@@ -675,13 +669,21 @@ async function pushTracksToPlaylist(tracks, playlist) {
   const list = Array.isArray(tracks) ? tracks : []
   if (list.length === 0 || !playlist) return { added: 0, skipped: 0 }
   const targetMusic = Array.isArray(playlist.music) ? [...playlist.music] : []
-  const existingKeys = new Set(targetMusic.map(m => (m.bvid ?? '') + ':' + (m.cid ?? '')))
+  const existingKeys = new Set(targetMusic.map(m => (m.bvid ?? '') + (m.cid ?? '')))
   let addedCount = 0
   for (const music of list) {
-    const k = (music.bvid ?? '') + ':' + (music.cid ?? '')
+    // 防御：只接受真正的歌曲对象，事件对象等杂散数据一律跳过
+    if (!isTrackLike(music)) {
+      console.warn('[pushTracksToPlaylist] 跳过非歌曲对象（疑似事件对象）:', typeof music, music && Object.keys(music).slice(0, 5))
+      continue
+    }
+    // cid 为空时只用 bvid 判重；两者都有 cid 时联合判重
+    const k = (music.bvid ?? '') + (music.cid ?? '')
     if (!existingKeys.has(k)) {
       existingKeys.add(k)
-      targetMusic.push({ ...music })
+      // 规范化：只保留歌曲字段 + 标题/作者/封面兜底（不再整体展开 music，
+      // 防止事件对象上的 isTrusted/_vts 等杂散键被持久化）
+      targetMusic.push(pickTrackFields(music))
       addedCount++
     }
   }
@@ -746,6 +748,8 @@ function buildEpisodeMusic(episode, source) {
  * - 多P视频 → 打开一体式分P选择弹窗
  */
 async function openAddPSelect(music) {
+  // 防御：非歌曲对象（如事件对象）不进入分P/添加流程
+  if (!isTrackLike(music)) return
   if (!music || !music.bvid) return
   isLoadingPList.value = true
   try {
@@ -961,18 +965,18 @@ function getNextMusicIndex() {
 }
 
 async function playMusic(music) {
-  console.log('开始播放:', music.title)
-  // 没有 bvid 且无 favId 的内容（如纯音频）暂时不支持直接播放
-  if (!music.bvid && !music.favId) {
+  logger.log('开始播放:', music?.title)
+  if (!music?.bvid && !music?.favId) {
     audioError.value = '该收藏内容暂不支持播放'
     playerStore.setAudioError(audioError.value)
     isAudioLoading.value = false
     playerStore.setIsAudioLoading(false)
     return
   }
+
   currentTrack.value = music
-  // 同步到 playerStore，LyricDisplay 监听的是 playerStore.currentTrack
   playerStore.setCurrentTrack(music)
+  lyricStore.loadLyricForTrack(music).catch(e => logger.warn('[playMusic] 歌词加载失败:', e?.message))
   playerStore.setIsPlaying(false)
   playerStore.setIsAudioLoading(true)
   playerStore.setAudioError('')
@@ -985,150 +989,46 @@ async function playMusic(music) {
   duration.value = music.duration || 180
   currentTime.value = 0
   bufferedProgress.value = 0
-  // 切歌时清空分 P 列表，避免上一次的"多 P 合集"被 handleTrackEnd 误用
-  // 导致歌单内普通歌曲不进入"下一首"分支
   currentVideoEpisodes.value = []
   currentEpisodeIndex.value = 0
 
-  // 尝试加载视频合集（如果当前曲是多 P 合集，loadVideoSeries 里会再次填充分 P 列表，
-  // 让 handleTrackEnd 自动在分 P 内循环；普通单曲则保持空，走歌单下一首）
+  // 分P/合集与取流并行，不阻塞起播
   loadVideoSeries(music.bvid)
-
-  // 更新系统媒体控制
-  updateMediaSession()
-
-  if (audioElement.value) {
-    try {
-      // 只有在音频正在播放时才调用pause()
-      if (!audioElement.value.paused) {
-        audioElement.value.pause()
-      }
-    } catch (error) {
-      console.error('暂停音频失败:', error)
-    }
-    audioElement.value.src = ''
-    audioElement.value = null
-  }
-
-  audioElement.value = new Audio()
-  audioElement.value.crossOrigin = 'anonymous'
-
-  // 接入 Web Audio Analyser，用于大屏播放页频谱可视化。
-  // 每次 playMusic 都会创建新 Audio 元素，所以必须重新 attach。
-  // 失败不影响正常播放。
-  try {
-    attachAudioAnalyser(audioElement.value)
-  } catch (err) {
-    console.warn('[AudioVisualizer] analyser 初始化失败:', err)
-  }
-
-  let audioSrc = null
+  syncMediaSession()
 
   try {
-    // 通过 electronAPI 获取视频详细信息
-    let musicInfoResult
-    if (window.electronAPI) {
-      musicInfoResult = await window.electronAPI.getMusicInfo(music.bvid)
-    }
-
-    if (musicInfoResult?.code === 0) {
-      const musicInfo = musicInfoResult.data
-
-      // 通过 electronAPI 获取视频播放地址
-      let playUrlResult
-      if (window.electronAPI) {
-        playUrlResult = await window.electronAPI.getMusicPlayUrl(music.bvid, music.cid ?? musicInfo.cid)
-      }
-
-      if (playUrlResult?.code === 0) {
-        console.log('获取到播放地址')
-        
-        // 根据设置选择音频流
-        audioSrc = selectAudioUrl(playUrlResult.data, settingsStore.audioQuality)
-        
-        console.log('使用音频地址:', audioSrc)
-      }
-    }
-  } catch (error) {
-    console.error('获取B站音频失败:', error)
-  }
-
-  if (!audioSrc) {
-    audioSrc = 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3'
-    console.log('使用备用音频源')
-  }
-
-  audioElement.value.src = audioSrc
-
-  // 开始监控下载进度
-  startDownloadProgressMonitor(music.bvid)
-
-  audioElement.value.addEventListener('loadedmetadata', () => {
-    console.log('音频加载完成，时长:', audioElement.value.duration)
-    duration.value = audioElement.value.duration || music.duration || 180
-    playerStore.setDuration(duration.value)
-    isAudioLoading.value = false
-    playerStore.setIsAudioLoading(false)
-  })
-
-  audioElement.value.addEventListener('timeupdate', () => {
-    if (audioElement.value) {
-      currentTime.value = audioElement.value.currentTime
-      playerStore.setCurrentTime(currentTime.value)
-      // 更新缓冲进度
-      updateBufferedProgress()
-    }
-  })
-
-  audioElement.value.addEventListener('ended', () => {
-    console.log('音频播放结束')
-    isPlaying.value = false
-    playerStore.setIsPlaying(false)
-    updateMediaSession()
-    handleTrackEnd()
-  })
-
-  audioElement.value.addEventListener('error', (e) => {
-    console.error('音频加载错误:', e)
-    audioError.value = '音频加载失败'
-    playerStore.setAudioError('音频加载失败')
-    isAudioLoading.value = false
-    playerStore.setIsAudioLoading(false)
-  })
-
-  audioElement.value.addEventListener('canplaythrough', () => {
-    console.log('音频可以播放')
-    isAudioLoading.value = false
-    playerStore.setIsAudioLoading(false)
-    bufferedProgress.value = 100
-    playerStore.setBufferedProgress(100)
-  })
-
-  audioElement.value.volume = 1.0
-
-  try {
-    await audioElement.value.play()
+    const { src } = await playWithResolvedSrc(music, settingsStore.audioQuality, { forceReload: true })
+    logger.log('使用音频地址:', src)
     isPlaying.value = true
     playerStore.setIsPlaying(true)
-    updateMediaSession()
-    console.log('音乐播放成功')
+    syncMediaSession()
+    const nextMusic = peekNextTrack()
+    if (nextMusic) prefetchTrack(nextMusic, settingsStore.audioQuality)
   } catch (error) {
-    console.error('播放失败:', error)
+    logger.error('播放失败:', error)
     isAudioLoading.value = false
     playerStore.setIsAudioLoading(false)
+    isPlaying.value = false
+    playerStore.setIsPlaying(false)
   }
+}
 
-  // 之前这里会强制 showPlayerPage=true 自动跳到大屏播放页，
-  // 改成"不自动跳"：点击播放只让底部播放栏出现 + 播放当前曲目。
-  // 用户需要大屏视图时手动点播放栏封面即可（见 openPlayerPageFromCover）。
+/** 只计算下一首，不触发播放（供预取用） */
+function peekNextTrack() {
+  if (currentTrack.value && currentVideoEpisodes.value.length > 0) {
+    const idx = (currentEpisodeIndex.value + 1) % currentVideoEpisodes.value.length
+    return currentVideoEpisodes.value[idx] || null
+  }
+  const nextIndex = getNextMusicIndex()
+  const musicList = currentView.value === 'search' ? searchResults.value : recommendedMusic.value
+  const list = currentPlaylist.value?.music?.length ? currentPlaylist.value.music : musicList
+  if (nextIndex >= 0 && list?.[nextIndex]) return list[nextIndex]
+  return null
 }
 
 function updateBufferedProgress() {
-  if (audioElement.value && audioElement.value.buffered.length > 0) {
-    const bufferedEnd = audioElement.value.buffered.end(audioElement.value.buffered.length - 1)
-    const duration = audioElement.value.duration || 1
-    bufferedProgress.value = Math.round((bufferedEnd / duration) * 100)
-  }
+  const el = getAudioEl()
+  bufferedProgress.value = computeBufferedPercent(el)
 }
 
 async function loadVideoSeries(bvid) {
@@ -1328,7 +1228,16 @@ function togglePlayMode() {
   const modes = ['order', 'loop', 'single', 'shuffle']
   const currentIndex = modes.indexOf(playMode.value)
   playMode.value = modes[(currentIndex + 1) % modes.length]
+  // 同步到 store：播放栏 / 引擎预取与 useAudioPlayer 读同一份模式
+  try { playerStore.playMode = playMode.value } catch (_) {}
 }
+
+watch(playMode, (v) => {
+  try { if (playerStore.playMode !== v) playerStore.playMode = v } catch (_) {}
+})
+watch(() => playerStore.playMode, (v) => {
+  if (v && playMode.value !== v) playMode.value = v
+})
 function getPlayModeIcon() {
   const mode = playModes.find(m => m.value === playMode.value)
   return mode ? mode.icon : playModes[0].icon
@@ -1340,16 +1249,23 @@ function getPlayModeLabel() {
 }
 
 function togglePlayPause() {
-  if (!audioElement.value) return
+  const el = getAudioEl()
+  if (!el.src && !currentTrack.value) return
 
   if (isPlaying.value) {
-    audioElement.value.pause()
+    pauseAudio()
+    isPlaying.value = false
+    playerStore.setIsPlaying(false)
   } else {
-    audioElement.value.play()
+    Promise.resolve(playAudio()).then(() => {
+      isPlaying.value = true
+      playerStore.setIsPlaying(true)
+    }).catch(() => {
+      isPlaying.value = false
+      playerStore.setIsPlaying(false)
+    })
   }
-  isPlaying.value = !isPlaying.value
-  playerStore.setIsPlaying(isPlaying.value)
-  updateMediaSession()
+  syncMediaSession()
 }
 
 function playPrevious() {
@@ -1432,8 +1348,8 @@ function playNext() {
 
 function onProgressInput(event) {
   const newTime = parseFloat(event.target.value)
-  if (audioElement.value && !isNaN(newTime)) {
-    audioElement.value.currentTime = newTime
+  if (!isNaN(newTime)) {
+    seekAudio(newTime)
     currentTime.value = newTime
     playerStore.setCurrentTime(newTime)
   }
@@ -1441,16 +1357,16 @@ function onProgressInput(event) {
 
 function onProgressChange(event) {
   const newTime = parseFloat(event.target.value)
-  if (audioElement.value && !isNaN(newTime)) {
-    audioElement.value.currentTime = newTime
+  if (!isNaN(newTime)) {
+    seekAudio(newTime)
     currentTime.value = newTime
     playerStore.setCurrentTime(newTime)
   }
 }
 
 function handleLyricSeek(targetTime) {
-  if (audioElement.value && !isNaN(targetTime)) {
-    audioElement.value.currentTime = targetTime
+  if (!isNaN(targetTime)) {
+    seekAudio(targetTime)
     currentTime.value = targetTime
     playerStore.setCurrentTime(targetTime)
   }
@@ -1460,6 +1376,14 @@ function toggleLyricPanel() {
   showLyricPanel.value = !showLyricPanel.value
   lyricStore.setShowLyricPanel(showLyricPanel.value)
 }
+
+// ───────── 桌面歌词（悬浮窗） ─────────
+const {
+  dlEnabled,
+  dlLocked,
+  toggleDesktopLyrics,
+  unlockDesktopLyrics
+} = useDesktopLyrics({ onSeek: handleLyricSeek })
 
 function createPlaylist() {
   showCreatePlaylistModal.value = true
@@ -1540,7 +1464,51 @@ function cancelRenamePlaylist() {
   renameValue.value = ''
 }
 
+/**
+ * 判断对象是否"像一首歌"。
+ * 真正的歌曲条目至少具备 bvid（B 站稿件号）、favId（B 站收藏项），
+ * 或者有非空标题。DOM 事件对象（MouseEvent 等）没有这些字段——
+ * 历史 bug 里模板的裸绑定 @click="openAddToPlaylistModal" 会把原生 click
+ * 事件当参数传进来，随后被当成歌曲存进歌单，导致"空白标题 + 未知作者"。
+ */
+function isTrackLike(music) {
+  if (!music || typeof music !== 'object') return false
+  const hasBvid = typeof music.bvid === 'string' && music.bvid.length > 0
+  const hasFavId = music.favId != null
+  const hasMeta = typeof music.title === 'string' && music.title.length > 0
+  return hasBvid || hasFavId || hasMeta
+}
+
+/** 歌曲条目允许保留的业务字段白名单（写歌单时只拷贝这些键） */
+const TRACK_FIELDS = ['bvid', 'aid', 'cid', 'favId', 'favType', 'title', 'author', 'cover', 'duration', 'playCount', 'pubdate', 'description', 'videos', 'isBiliFavoriteResource']
+
+/**
+ * 从任意对象中抽出歌曲条目应有的字段，并补齐标题/作者/封面兜底。
+ * 关键：不再整体展开源对象（旧实现的 `...music` 会把事件对象上的
+ * isTrusted/_vts 等杂散键一起写进歌单）。
+ */
+function pickTrackFields(music) {
+  const out = {}
+  if (!music || typeof music !== 'object') return out
+  for (const k of TRACK_FIELDS) {
+    if (music[k] !== undefined && music[k] !== null) out[k] = music[k]
+  }
+  out.title = out.title || '未知标题'
+  out.author = out.author || '未知作者'
+  out.cover = out.cover || ''
+  out.duration = out.duration || 0
+  out.bvid = out.bvid || ''
+  out.cid = out.cid ?? (music.cid ?? null)
+  return out
+}
+
 function openAddToPlaylistModal(music) {
+  // 防御：如果传入的不是歌曲对象（例如裸绑定 @click 时 Vue 塞进来的
+  // 原生事件对象），按"未指定歌曲"处理，回退到当前播放曲目。
+  if (music && !isTrackLike(music)) {
+    console.warn('[openAddToPlaylistModal] 忽略非歌曲对象（疑似事件对象）:', typeof music, music && Object.keys(music).slice(0, 5))
+    music = null
+  }
   if (!music) {
     if (!currentTrack.value) return
     addToPlaylistTarget.value = null
@@ -1551,17 +1519,36 @@ function openAddToPlaylistModal(music) {
 }
 
 async function addToPlaylist(playlist) {
-  const music = addToPlaylistTarget.value || currentTrack.value
+  let music = addToPlaylistTarget.value || currentTrack.value
   if (!music || !playlist) return
+  // 防御：目标必须是真正的歌曲对象（带 bvid/favId/标题），
+  // 事件对象等杂散数据不能进歌单（否则就会出现"空白标题/未知作者"的脏条目）
+  if (!isTrackLike(music)) {
+    console.warn('[addToPlaylist] 忽略非歌曲对象（疑似事件对象）:', typeof music, music && Object.keys(music).slice(0, 5))
+    addToPlaylistTarget.value = null
+    showAddToPlaylistModal.value = false
+    return
+  }
   if (!playlist.music) {
     playlist.music = []
   }
-  const exists = playlist.music.some(m => m.bvid === music.bvid && m.cid === music.cid)
+  // bvid 必须匹配；cid 同时存在时才要求一致（search/recommended 结果可能无 cid）
+  const exists = playlist.music.some(m =>
+    m && music && (m.bvid ?? null) === (music.bvid ?? null) &&
+    ((m.cid ?? null) !== null && (music.cid ?? null) !== null
+      ? (m.cid ?? null) === (music.cid ?? null)
+      : true)
+  )
   if (!exists) {
-    playlist.music.push({ ...music })
+    // 规范化：只保留歌曲字段 + 标题/作者/封面兜底（不再整体展开 music，
+    // 避免把事件对象上的 isTrusted/_vts 等杂散键写进歌单）
+    const normalizedMusic = pickTrackFields(music)
+    playlist.music.push(normalizedMusic)
     syncPlaylistCover(playlist)
     try { await playlistStore.savePlaylists() } catch (e) {
       console.warn('[addToPlaylist] save failed:', e.message)
+      alert('添加到歌单失败，请稍后重试')
+      return
     }
   }
   addToPlaylistTarget.value = null
@@ -1572,26 +1559,14 @@ async function downloadMusic(music) {
   try {
     isAudioLoading.value = true
 
-    let musicInfoResult
-    if (music.cid == null) {
-      musicInfoResult = await window.electronAPI.getMusicInfo(music.bvid)
-      if (musicInfoResult.code !== 0) {
-        throw new Error('获取音乐信息失败')
-      }
-    }
-    const cid = music.cid ?? musicInfoResult?.data?.cid
-
-    const playUrlResult = await window.electronAPI.getMusicPlayUrl(music.bvid, cid)
-    if (playUrlResult.code !== 0) {
-      throw new Error('获取播放地址失败')
-    }
-
-    const audioInfo = selectAudioInfo(playUrlResult.data, settingsStore.audioQuality)
-    if (!audioInfo?.url) {
+    // 复用播放地址缓存（cid + playurl），避免下载与播放重复打接口
+    const source = await resolvePlaySource(music, settingsStore.audioQuality)
+    if (!source?.url || source.url.includes('soundhelix.com')) {
       throw new Error('未找到音频地址')
     }
-    const audioUrl = audioInfo.url
-    const audioCodecs = audioInfo.codecs
+    const audioUrl = source.url
+    const audioCodecs = source.codecs
+    const cid = source.cid ?? music.cid
 
     downloadStore.setShowDownloadManager(true)
     await downloadStore.addTask({
@@ -1605,7 +1580,7 @@ async function downloadMusic(music) {
       audioCodecs
     })
   } catch (error) {
-    console.error('下载音乐失败:', error)
+    logger.error('下载音乐失败:', error)
     alert('下载失败：' + error.message)
   } finally {
     isAudioLoading.value = false
@@ -1800,12 +1775,21 @@ function handleMenuCommand(command) {
     case 'toggle-lyric':
       toggleLyricPanel()
       break
+    case 'toggle-desktop-lyrics':
+      toggleDesktopLyrics()
+      break
     case 'open-settings':
       openSettings()
       break
     case 'go-mine':
       // 切到"我的"视图（MineView 在 currentView === 'mine' 时挂载）
       playlistStore.setCurrentView('mine')
+      break
+    case 'check-update':
+      // 菜单"检查更新…"：手动检查（绕过缓存），有新版本时切到"我的"让用户看到
+      updateStore.check(true).then((res) => {
+        if (res && res.hasUpdate) playlistStore.setCurrentView('mine')
+      })
       break
     case 'toggle-player-page':
       // 全屏播放器显隐：有 currentTrack 时才进，无曲不响应
@@ -1874,6 +1858,48 @@ onMounted(async () => {
   // 期间任何 savePlaylists() 会被 store 内部排队，load 完才 flush。
   await playlistStore.load()
   loadRecommendedMusic()
+
+  // 统一播放内核：注册完整 playMusic/handleTrackEnd，并把引擎事件同步到本地 UI 状态
+  const hostPlayer = useAudioPlayer()
+  hostPlayer.registerHostPlayback({ playMusic, handleTrackEnd })
+  bindPlaybackRuntime({
+    onTime: (time, buf, flags) => {
+      currentTime.value = time
+      if (flags?.bufChanged) bufferedProgress.value = buf
+      if (flags?.syncStore) playerStore.setCurrentTime(time)
+    },
+    onLoadedMetadata: (el) => {
+      const dur = el.duration || currentTrack.value?.duration || 180
+      duration.value = dur
+      playerStore.setDuration(dur)
+      isAudioLoading.value = false
+      playerStore.setIsAudioLoading(false)
+    },
+    onCanPlay: () => {
+      isAudioLoading.value = false
+      playerStore.setIsAudioLoading(false)
+      bufferedProgress.value = 100
+      playerStore.setBufferedProgress(100)
+    },
+    onError: () => {
+      audioError.value = '音频加载失败'
+      playerStore.setAudioError('音频加载失败')
+      isAudioLoading.value = false
+      playerStore.setIsAudioLoading(false)
+      isPlaying.value = false
+      playerStore.setIsPlaying(false)
+    },
+    onEnded: () => {
+      isPlaying.value = false
+      playerStore.setIsPlaying(false)
+      syncMediaSession()
+      handleTrackEnd()
+    }
+  })
+  hostPlayer.ensureMediaSessionHandlers()
+  // 本地 playMode 与 store 对齐（播放栏/引擎读 store，大屏读本地）
+  if (playerStore.playMode) playMode.value = playerStore.playMode
+
   setupMediaSessionHandlers()
   downloadStore.loadTasks()
   downloadStore.registerProgressListener()
@@ -1902,6 +1928,16 @@ onMounted(async () => {
     userStore.load(),
     playlistStore.load()
   ])
+
+  // 版本更新：静默检查，排在首次引导之后 —— 引导未完成时不检查，避免与引导页抢占首屏
+  updateStore.loadVersion()
+  if (settingsStore.onboardingCompleted && settingsStore.checkUpdateOnStartup) {
+    updateStore.check(false)
+  }
+  // 引导页刚完成（onboardingCompleted 变为 true）时补一次静默检查
+  watch(() => settingsStore.onboardingCompleted, (done) => {
+    if (done && settingsStore.checkUpdateOnStartup) updateStore.check(false)
+  })
 
   // 启动时尝试恢复登录态：先检查主进程是否持有 B 站 cookie，再拉取用户信息
   try {
@@ -2023,8 +2059,7 @@ onUnmounted(() => {
             :src="userStore.userInfo?.face"
             class="topbar-avatar"
             alt=""
-            @error="$event.target.style.display='none'"
-          />
+            @error="$event.target.style.display='none'" loading="lazy" decoding="async" />
           <span>{{ userStore.userInfo?.uname || '已登录' }}</span>
         </button>
         <button v-else class="topbar-btn topbar-login" @click="openLoginPanel" title="登录 B 站">
@@ -2080,7 +2115,7 @@ onUnmounted(() => {
               @click="playMusic(music)"
             >
               <div class="card-cover">
-                <img :src="music.cover" :alt="music.title" @error="$event.target.src='https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=400'">
+                <img :src="fixCoverUrl(music.cover)" :alt="music.title" loading="lazy" decoding="async" @error="$event.target.src='https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=400'">
                 <div class="play-overlay">
                   <button class="play-button" @click.stop="playMusic(music)">
                     <svg viewBox="0 0 24 24" fill="white" width="24" height="24"><path d="M8 5v14l11-7z"/></svg>
@@ -2136,7 +2171,7 @@ onUnmounted(() => {
             @click="playMusic(music)"
           >
             <div class="card-cover">
-              <img :src="music.cover" :alt="music.title" @error="$event.target.src='https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=400'">
+              <img :src="fixCoverUrl(music.cover)" :alt="music.title" loading="lazy" decoding="async" @error="$event.target.src='https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=400'">
               <span v-if="music.videos > 1" class="p-badge">{{ music.videos }} P</span>
               <div class="play-overlay">
                 <button class="play-button" @click.stop="playMusic(music)">
@@ -2353,8 +2388,7 @@ onUnmounted(() => {
             <img
               :src="currentPlaylist?.cover || 'https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=400'"
               :alt="currentPlaylist?.name"
-              @error="$event.target.src='https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=400'"
-            />
+              @error="$event.target.src='https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=400'" loading="lazy" decoding="async" />
             <div class="playlist-cover-overlay">
               <svg viewBox="0 0 24 24" fill="currentColor" width="32" height="32">
                 <path d="M8 5v14l11-7z"/>
@@ -2494,11 +2528,10 @@ onUnmounted(() => {
                 :src="music.cover"
                 :alt="music.title"
                 class="track-cover"
-                @error="$event.target.src='https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=100'"
-              />
+                @error="$event.target.src='https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=100'" loading="lazy" decoding="async" />
               <div class="track-text">
-                <h4>{{ music.title }}</h4>
-                <p>{{ music.author }}</p>
+                <h4>{{ music.title || '未知标题' }}</h4>
+                <p>{{ music.author || '未知作者' }}</p>
               </div>
             </div>
             <div class="col-actions">
@@ -2564,14 +2597,14 @@ onUnmounted(() => {
     <div v-if="currentTrack" class="player-bar">
       <div class="current-track">
         <button class="current-cover-btn" @click="openPlayerPageFromCover">
-          <img :src="currentTrack.cover" :alt="currentTrack.title" class="current-cover" @error="$event.target.src='https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=400'">
+          <img :src="fixCoverUrl(currentTrack.cover)" :alt="currentTrack.title" class="current-cover" loading="lazy" decoding="async" @error="$event.target.src='https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=400'">
           <div class="cover-overlay">
             <svg viewBox="0 0 24 24" fill="white" width="24" height="24"><path d="M8 5v14l11-7z"/></svg>
           </div>
         </button>
         <div class="current-info">
-          <h4>{{ currentTrack.title }}</h4>
-          <p>{{ currentTrack.author }}</p>
+          <h4>{{ currentTrack.title || '未知标题' }}</h4>
+          <p>{{ currentTrack.author || '未知作者' }}</p>
         </div>
       </div>
 
@@ -2614,7 +2647,16 @@ onUnmounted(() => {
       </div>
 
       <div class="player-actions">
-        <button @click="openAddToPlaylistModal" class="action-btn" title="添加到歌单">
+        <button
+          @click="dlLocked ? unlockDesktopLyrics() : toggleDesktopLyrics()"
+          class="action-btn desktop-lyrics-btn"
+          :class="{ active: dlEnabled, locked: dlLocked }"
+          :title="dlLocked ? '桌面歌词已锁定，点击解锁' : (dlEnabled ? '关闭桌面歌词' : '开启桌面歌词 (Cmd/Ctrl+D)')"
+        >
+          <span class="desktop-lyrics-char" aria-hidden="true">词</span>
+          <svg v-if="dlEnabled && !dlLocked" viewBox="0 0 24 24" fill="currentColor" width="10" height="10" class="dl-on-dot"><circle cx="12" cy="12" r="6"/></svg>
+        </button>
+        <button @click="openAddToPlaylistModal()" class="action-btn" title="添加到歌单">
           <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
         </button>
         <button @click="togglePlaylistManager" class="action-btn" title="歌单管理">
@@ -2672,8 +2714,10 @@ onUnmounted(() => {
           class="player-page-cover-bg__img"
           :src="coverBgUrl"
           :key="coverBgUrl"
+          loading="lazy"
+          decoding="async"
           @error="$event.target.src='https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=1200'"
-        >
+        />
       </div>
 
       <!-- 左上角：返回 -->
@@ -2702,7 +2746,7 @@ onUnmounted(() => {
           <div class="player-page-left">
             <div class="album-art-zone">
               <div ref="albumArtRef" class="album-art">
-                <img :src="fixCoverUrl(currentTrack.cover)" :alt="currentTrack.title" @error="$event.target.src='https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=400'">
+                <img :src="fixCoverUrl(currentTrack.cover)" :alt="currentTrack.title" loading="lazy" decoding="async" @error="$event.target.src='https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=400'">
               </div>
               <!-- 音频波纹：随低音能量从封面中心向外扩散，开关关闭时不渲染 -->
               <AlbumRipple
@@ -2712,8 +2756,8 @@ onUnmounted(() => {
             </div>
 
             <div class="track-info">
-              <h2>{{ currentTrack.title }}</h2>
-              <h3>{{ currentTrack.author }}</h3>
+              <h2>{{ currentTrack.title || '未知标题' }}</h2>
+              <h3>{{ currentTrack.author || '未知作者' }}</h3>
             </div>
 
             <div class="big-progress">
@@ -3012,6 +3056,9 @@ onUnmounted(() => {
     </div>
 
     <!-- 设置面板已迁移至 MineView 中 -->
+
+    <!-- 首次启动引导（onboardingCompleted 为 false 时自显示） -->
+    <OnboardingGuide />
 
     <DownloadManager />
 

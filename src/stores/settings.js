@@ -9,9 +9,12 @@ const EQ_FLAT_BANDS = new Array(10).fill(0)
 let _persistChain = Promise.resolve()
 
 // ───────── Schema ─────────
-// Schema v4
+// Schema v7：新增桌面歌词全局快捷键 desktopLyricsHotkey
+// （默认值与 electron/main.js 的 DESKTOP_LYRICS_HOTKEY_DEFAULT 互指，改动需两处同步）
+// Schema v8：新增首次启动引导完成标记 onboardingCompleted
+// Schema v9：新增启动时自动检查更新开关 checkUpdateOnStartup
 const settingsSchema = defineSchema({
-  version: 4,
+  version: 9,
   fields: {
     audioQuality: s.enum(['auto', 'lossless', 'high', 'medium', 'low'], 'auto'),
     audioVisualizerEnabled: s.boolean(true),
@@ -20,11 +23,28 @@ const settingsSchema = defineSchema({
     eqBands: s.array(s.number(-12, 12, 0), 10),
     eqPreset: s.string('flat'),
     windowControlsEnabled: s.boolean(true),
-    lyricDisplayMode: s.enum(['original', 'romaji', 'translation'], 'original')
+    lyricDisplayMode: s.enum(['original', 'romaji', 'translation'], 'original'),
+    desktopLyricsLocked: s.boolean(false),
+    desktopLyricsHotkey: s.string('CommandOrControl+D'),
+    onboardingCompleted: s.boolean(false),
+    checkUpdateOnStartup: s.boolean(true)
   },
   migrations: {
     2: (data) => ({ ...data, windowControlsEnabled: data.windowControlsEnabled ?? true }),
-    3: (data) => ({ ...data, lyricDisplayMode: data.lyricDisplayMode ?? 'original' })
+    3: (data) => ({ ...data, lyricDisplayMode: data.lyricDisplayMode ?? 'original' }),
+    // v4 → v5（历史）：desktopLyrics 对象（已被 v6 移除）
+    4: (data) => ({ ...data, desktopLyrics: data.desktopLyrics ?? { fontSize: 30, colorIndex: 0, lineMode: 'single', locked: false } }),
+    // v5 → v6：从旧对象里只提取 locked，其余字段丢弃
+    5: (data) => {
+      const { desktopLyrics, ...rest } = data
+      return { ...rest, desktopLyricsLocked: !!desktopLyrics?.locked }
+    },
+    // v6 → v7：补桌面歌词全局快捷键默认值
+    6: (data) => ({ ...data, desktopLyricsHotkey: data.desktopLyricsHotkey ?? 'CommandOrControl+D' }),
+    // v7 → v8：补首次启动引导完成标记默认值
+    7: (data) => ({ ...data, onboardingCompleted: data.onboardingCompleted ?? false }),
+    // v8 → v9：补启动时自动检查更新开关默认值
+    8: (data) => ({ ...data, checkUpdateOnStartup: data.checkUpdateOnStartup ?? true })
   }
 })
 
@@ -73,7 +93,15 @@ export const useSettingsStore = defineStore('settings', {
       : true,
     lyricDisplayMode: typeof _peekedSettings.lyricDisplayMode === 'string'
       ? _peekedSettings.lyricDisplayMode
-      : 'original'
+      : 'original',
+    desktopLyricsLocked: !!_peekedSettings.desktopLyricsLocked,
+    desktopLyricsHotkey: typeof _peekedSettings.desktopLyricsHotkey === 'string'
+      ? _peekedSettings.desktopLyricsHotkey
+      : 'CommandOrControl+D',
+    onboardingCompleted: _peekedSettings.onboardingCompleted === true,
+    checkUpdateOnStartup: typeof _peekedSettings.checkUpdateOnStartup === 'boolean'
+      ? _peekedSettings.checkUpdateOnStartup
+      : true
   }),
   actions: {
     /**
@@ -91,11 +119,20 @@ export const useSettingsStore = defineStore('settings', {
         if (typeof data.audioQuality === 'string') this.audioQuality = data.audioQuality
         if (typeof data.windowControlsEnabled === 'boolean') this.windowControlsEnabled = data.windowControlsEnabled
         if (typeof data.lyricDisplayMode === 'string') this.lyricDisplayMode = data.lyricDisplayMode
+        if (typeof data.desktopLyricsLocked === 'boolean') this.desktopLyricsLocked = data.desktopLyricsLocked
+        if (typeof data.desktopLyricsHotkey === 'string' && data.desktopLyricsHotkey) this.desktopLyricsHotkey = data.desktopLyricsHotkey
+        if (typeof data.onboardingCompleted === 'boolean') this.onboardingCompleted = data.onboardingCompleted
+        if (typeof data.checkUpdateOnStartup === 'boolean') this.checkUpdateOnStartup = data.checkUpdateOnStartup
         applyEQToEngine(this.eqEnabled, this.eqBands)
       }
     },
 
     setShowSettings(show) { this.showSettings = show },
+    /** 首次启动引导：完成/跳过时调用，落盘后不再显示 */
+    completeOnboarding() {
+      this.onboardingCompleted = true
+      this.persist()
+    },
     setActiveSettingsTab(tab) { this.activeSettingsTab = tab },
     setDownloadDirectory(dir) { this.downloadDirectory = dir },
     setCacheSize(size) { this.cacheSize = size },
@@ -119,11 +156,33 @@ export const useSettingsStore = defineStore('settings', {
       this.windowControlsEnabled = !!enabled
       this.persist()
     },
+    setCheckUpdateOnStartup(enabled) {
+      this.checkUpdateOnStartup = !!enabled
+      this.persist()
+    },
     setLyricDisplayMode(mode) {
       this.lyricDisplayMode = mode
       this.persist()
       // 派发自定义事件通知歌词组件重新加载
       window.dispatchEvent(new CustomEvent('pink-music:lyric-mode-changed', { detail: mode }))
+    },
+    /**
+     * 桌面歌词锁定态（唯一保留的桌面歌词设置项）。
+     * 锁定后歌词窗点击穿透；解锁入口在主窗口播放栏按钮或全局快捷键。
+     */
+    setDesktopLyricsLocked(locked) {
+      this.desktopLyricsLocked = !!locked
+      this.persist()
+    },
+    /**
+     * 桌面歌词全局快捷键（Electron accelerator 字符串，如 'CommandOrControl+Shift+L'）。
+     * 仅持久化；实际注册/冲突校验由主进程 desktop-lyrics-hotkey-set 完成，
+     * 调用方（设置页）需先拿到 ok:true 再写这里。
+     */
+    setDesktopLyricsHotkey(accel) {
+      if (typeof accel !== 'string' || !accel) return
+      this.desktopLyricsHotkey = accel
+      this.persist()
     },
     setEQEnabled(enabled) {
       this.eqEnabled = !!enabled
@@ -177,7 +236,11 @@ export const useSettingsStore = defineStore('settings', {
           eqBands: this.eqBands,
           eqPreset: this.eqPreset,
           windowControlsEnabled: this.windowControlsEnabled,
-          lyricDisplayMode: this.lyricDisplayMode
+          lyricDisplayMode: this.lyricDisplayMode,
+          desktopLyricsLocked: this.desktopLyricsLocked,
+          desktopLyricsHotkey: this.desktopLyricsHotkey,
+          onboardingCompleted: this.onboardingCompleted,
+          checkUpdateOnStartup: this.checkUpdateOnStartup
         })
       })
       return _persistChain

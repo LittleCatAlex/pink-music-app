@@ -3999,6 +3999,84 @@ button:active:not(:disabled):not(.no-press),
   z-index: 1;
 }
 
+/* ==================== 桌面歌词开关按钮（底部播放栏） ==================== */
+.desktop-lyrics-btn .desktop-lyrics-char {
+  position: relative;
+  z-index: 1;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+}
+/* 开启态：文字染主题色 + 右上角状态点 */
+.desktop-lyrics-btn.active .desktop-lyrics-char {
+  background: var(--primary-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.desktop-lyrics-btn.active.locked .desktop-lyrics-char {
+  color: var(--text-secondary);
+  background: none;
+  -webkit-text-fill-color: currentColor;
+}
+.dl-on-dot {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  color: var(--primary-color, #ff5f9e);
+  z-index: 2;
+}
+.desktop-lyrics-btn.locked::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: 50%;
+  border: 1.5px dashed var(--text-secondary);
+  opacity: 0.5;
+}
+
+/* ==================== 桌面歌词全局快捷键（设置页） ==================== */
+.hotkey-control {
+  gap: 10px;
+}
+.hotkey-display {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 64px;
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  font-variant-numeric: tabular-nums;
+}
+.hotkey-display.is-recording {
+  border-color: var(--primary-color);
+  color: var(--primary-color);
+  animation: hotkey-pulse 1.2s ease-in-out infinite;
+}
+.hotkey-display.is-conflict {
+  border-color: var(--error-color, #ff4d4f);
+  color: var(--error-color, #ff4d4f);
+}
+@keyframes hotkey-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 95, 158, 0.25); }
+  50% { box-shadow: 0 0 0 4px rgba(255, 95, 158, 0.15); }
+}
+.hotkey-tip {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.hotkey-error {
+  color: var(--error-color, #ff4d4f);
+  margin: -2px 16px 8px;
+}
+
 /* ==================== 歌单管理器 ==================== */
 .playlist-manager {
   position: fixed;
@@ -5692,6 +5770,77 @@ input:checked + .slider:before {
   color: var(--text-muted);
   font-size: var(--text-xs);
   margin-top: var(--spacing-md);
+}
+
+/* ==================== 版本更新检查 ==================== */
+.btn-secondary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* 关于区为居中列布局，需让开关行占满宽度 */
+.about-content .setting-item { width: 100%; text-align: left; }
+
+.update-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: var(--spacing-sm);
+}
+
+.update-status {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+.update-status.is-available { color: var(--primary-color); font-weight: var(--font-weight-medium); }
+.update-status.is-error { color: #fca5a5; }
+
+.update-modal {
+  width: min(520px, 92vw);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.update-modal h2 { margin-bottom: var(--spacing-sm); }
+
+.update-modal-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-md);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  margin-bottom: var(--spacing-md);
+}
+
+.release-notes {
+  overflow-y: auto;
+  min-height: 0;
+  text-align: left;
+  max-height: 46vh;
+  padding: var(--spacing-sm) 0;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  line-height: 1.7;
+}
+.release-notes h4 {
+  font-size: var(--text-base);
+  color: var(--text-primary);
+  margin: var(--spacing-md) 0 var(--spacing-xs);
+}
+.release-notes h5 {
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  margin: var(--spacing-sm) 0 var(--spacing-xs);
+}
+.release-notes p { margin: 0 0 var(--spacing-xs); }
+.release-notes ul { margin: 0 0 var(--spacing-sm); padding-left: 20px; }
+.release-notes li { margin: 2px 0; }
+.release-notes strong { color: var(--text-primary); }
+.release-notes code {
+  font-family: var(--font-mono);
+  background: var(--bg-tertiary);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 0.9em;
 }
 
 /* ==================== 新布局调整 ==================== */
