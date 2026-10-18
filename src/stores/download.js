@@ -1,5 +1,8 @@
 import { defineStore } from 'pinia'
 
+// 仍在进行中的任务状态：只有它们允许「带外出现」时补回列表
+const ACTIVE_STATUSES = ['downloading', 'waiting', 'pending']
+
 export const useDownloadStore = defineStore('download', {
   state: () => ({
     tasks: [],
@@ -21,8 +24,14 @@ export const useDownloadStore = defineStore('download', {
     updateTask(task) {
       const index = this.tasks.findIndex(t => t.id === task.id)
       if (index > -1) {
-        this.tasks[index] = { ...this.tasks[index], ...task }
-      } else {
+        const prev = this.tasks[index]
+        const merged = { ...prev, ...task }
+        // 进度帧可能不带 filePath（或带空值），不能把已拿到的落盘路径抹掉
+        if (!merged.filePath && prev.filePath) merged.filePath = prev.filePath
+        this.tasks[index] = merged
+      } else if (ACTIVE_STATUSES.includes(task.status)) {
+        // 清空列表后主进程仍会推来终态帧：只补回进行中的任务，
+        // 否则已完成的旧任务会「复活」在列表里
         this.tasks.unshift(task)
       }
     },

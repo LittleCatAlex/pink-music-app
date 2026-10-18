@@ -864,6 +864,58 @@ function handleOpenSettings() {
       </div>
 
       <div class="settings-section glass-card">
+        <h3>本地音乐</h3>
+        <div class="setting-item">
+          <div class="setting-label-with-hint">
+            <label>收录「需转码」格式</label>
+            <span class="setting-hint">wma / ape / dsf 等 Chromium 无法直接播放的格式也导入本地库（列表标记为需转码，不参与直接播放）</span>
+          </div>
+          <div class="setting-value">
+            <label class="switch" :title="settingsStore.localIncludeUnplayable ? '关闭后导入时跳过这些格式' : '开启后一并导入并标记'">
+              <input
+                type="checkbox"
+                :checked="settingsStore.localIncludeUnplayable"
+                @change="settingsStore.setLocalIncludeUnplayable($event.target.checked)"
+              >
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+        <div class="setting-item">
+          <div class="setting-label-with-hint">
+            <label>启动时检测本地文件</label>
+            <span class="setting-hint">启动后自动校验本地音乐文件是否仍存在，失效的曲目会被标记（不会自动删除记录或文件）</span>
+          </div>
+          <div class="setting-value">
+            <label class="switch" :title="settingsStore.localCheckMissingOnStartup ? '关闭启动检测' : '开启启动检测'">
+              <input
+                type="checkbox"
+                :checked="settingsStore.localCheckMissingOnStartup"
+                @change="settingsStore.setLocalCheckMissingOnStartup($event.target.checked)"
+              >
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+        <div class="setting-item">
+          <div class="setting-label-with-hint">
+            <label>导入后自动匹配云端封面</label>
+            <span class="setting-hint">导入本地音乐后，自动为缺少封面的曲目匹配云端封面（来源 iTunes / LrcApi / 网易云，单张 600×600）。有歌手时严格校对；无歌手时按歌名取第一个结果</span>
+          </div>
+          <div class="setting-value">
+            <label class="switch" :title="settingsStore.localAutoFetchCover ? '关闭自动匹配' : '开启自动匹配'">
+              <input
+                type="checkbox"
+                :checked="settingsStore.localAutoFetchCover"
+                @change="settingsStore.setLocalAutoFetchCover($event.target.checked)"
+              >
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-section glass-card">
         <h3>下载设置</h3>
         <div class="setting-item">
           <label>下载目录</label>

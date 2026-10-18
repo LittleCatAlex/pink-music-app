@@ -3,15 +3,16 @@ import { fixCoverUrl } from './bilibili.js'
 import { resolvePlayUrl, resolvePlaySource, prefetchPlayUrl } from './playUrlCache.js'
 import logger from './logger.js'
 
-const FALLBACK_SRC = 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3'
 const TIME_SYNC_MS = 200
 const BUFFER_SYNC_EPS = 2
+const POSITION_SYNC_MS = 1000
 
 let audio = null
 let eventsBound = false
 let visualizerAttached = false
 let lastTimeSyncAt = 0
 let lastBufferedPct = -1
+let lastPositionStateAt = 0
 
 const runtime = {
   onTime: null,
@@ -53,6 +54,24 @@ export function computeBufferedPercent(el) {
   }
 }
 
+/** 系统媒体进度：timeupdate 高频触发，节流到至少 1s 上报一次 */
+function syncPositionState(el) {
+  if (typeof navigator.mediaSession?.setPositionState !== 'function') return
+  const now = Date.now()
+  if (now - lastPositionStateAt < POSITION_SYNC_MS) return
+  try {
+    const duration = Number(el.duration)
+    if (!Number.isFinite(duration) || duration <= 0) return
+    lastPositionStateAt = now
+    const position = Math.min(Math.max(Number(el.currentTime) || 0, 0), duration)
+    navigator.mediaSession.setPositionState({
+      duration,
+      position,
+      playbackRate: Number(el.playbackRate) || 1
+    })
+  } catch (_) { /* 部分平台不支持 setPositionState */ }
+}
+
 function ensureAudioEvents() {
   const el = getAudioEl()
   if (eventsBound) return
@@ -72,6 +91,7 @@ function ensureAudioEvents() {
     const bufChanged = Math.abs(buf - lastBufferedPct) >= BUFFER_SYNC_EPS
     if (bufChanged) lastBufferedPct = buf
     runtime.onTime?.(t, buf, { syncStore: shouldSyncStore, bufChanged })
+    syncPositionState(el)
   })
 
   el.addEventListener('ended', () => {
@@ -92,8 +112,11 @@ export function ensureVisualizer() {
   try {
     const analyser = attachAudioAnalyser(getAudioEl())
     visualizerAttached = !!analyser
+    if (!visualizerAttached) logger.warn('[audioEngine] analyser not ready, visualizer skipped')
     return visualizerAttached
   } catch (err) {
+    // 失败时不缓存"已挂载"，下次播放会重新尝试 attach
+    visualizerAttached = false
     logger.warn('[audioEngine] analyser attach failed:', err)
     return false
   }
@@ -130,23 +153,29 @@ export function setupMediaSessionHandlers({ onPlay, onPause, onNext, onPrev }) {
 
 /**
  * 解析并播放。复用同一 Audio；src 未变时不再强制 reload。
+ * shouldAbort() 返回 true 表示调用方已切到别的曲目，本次播放应放弃。
  */
-export async function playWithResolvedSrc(music, quality, { forceReload = false } = {}) {
+export async function playWithResolvedSrc(music, quality, { forceReload = false, shouldAbort } = {}) {
   const el = getAudioEl()
   ensureAudioEvents()
   ensureVisualizer()
 
-  const src = await resolvePlayUrl(music, quality)
-  const nextSrc = src || FALLBACK_SRC
-
+  // 解析地址是网络请求，等待期间先停掉旧曲，避免串音
   try {
     if (!el.paused) el.pause()
   } catch (_) {}
+
+  const src = await resolvePlayUrl(music, quality)
+  if (shouldAbort && shouldAbort()) return { aborted: true }
+
+  const nextSrc = src || ''
+  if (!nextSrc) throw new Error('无法获取音频地址')
 
   const currentAbs = el.src || ''
   const same = currentAbs && (currentAbs === nextSrc || currentAbs.endsWith(nextSrc) || nextSrc.endsWith(currentAbs.replace(/^file:\/\//, '')))
   // 仅当地址真正变化（或强制）时改 src，避免同曲重播整段 rebuffer
   if (forceReload || !same) {
+    if (shouldAbort && shouldAbort()) return { aborted: true }
     el.src = nextSrc
   }
 
@@ -179,4 +208,4 @@ export function prefetchTrack(music, quality) {
   prefetchPlayUrl(music, quality)
 }
 
-export { resolvePlayUrl, resolvePlaySource, FALLBACK_SRC }
+export { resolvePlayUrl, resolvePlaySource }

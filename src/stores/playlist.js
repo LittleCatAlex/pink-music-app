@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { createPersistentStorage, writeLocalJsonNow } from '@/utils/persistentStorage'
+import { sameTrack, isTrackLike, pickTrackFields, trackKey } from '@/utils/trackKey'
 
 // 主存储 key：playlists（userData/app-data/playlists.json）
 // localStorage fallback key：pink-music-playlists
@@ -208,14 +209,8 @@ function mergePlaylists(loaded, pending) {
     // 防御：pending 快照里若是混入了非歌曲对象（事件对象脏数据），合并时直接过滤
     for (const song of pp.music.filter(m => isTrackLike(m))) {
       if (!song) continue
-      const dup = existing.music.some(m => {
-        if (!m) return false
-        if (song.bvid && m.bvid && song.bvid === m.bvid) return true
-        if (song.favId != null && m.favId != null &&
-            song.favId === m.favId &&
-            (song.favType ?? null) === (m.favType ?? null)) return true
-        return false
-      })
+      // 统一身份判重（本地曲走 id，B 站曲走 bvid+cid）
+      const dup = existing.music.some(m => sameTrack(m, song))
       if (!dup) existing.music.push(song)
     }
     // B 站收藏夹：更新 cover/title/media_count（如果 pending 端有更新）
@@ -255,41 +250,38 @@ function ensureStableIds(arr) {
 
 /**
  * 判断对象是否"像一首歌"。
- * 真正的歌曲条目至少具备 bvid（B 站稿件号）、favId（B 站收藏项），
- * 或者有非空标题。DOM 事件对象（MouseEvent 等）没有这些字段——
+ * 判定逻辑统一收敛在 utils/trackKey.js（本地曲 / B 站曲共用），
+ * 这里只做 re-export 保持内部调用点不变。
  * 历史 bug：模板裸绑定 @click="openAddToPlaylistModal" 会把原生 click 事件
  * 传进添加流程，事件对象被序列化后只剩 isTrusted/_vts，导致歌单里出现
  * "空白标题 + 未知作者"的脏条目。
  */
-function isTrackLike(music) {
-  if (!music || typeof music !== 'object') return false
-  const hasBvid = typeof music.bvid === 'string' && music.bvid.length > 0
-  const hasFavId = music.favId != null
-  const hasMeta = typeof music.title === 'string' && music.title.length > 0
-  return hasBvid || hasFavId || hasMeta
-}
-
-/** 歌曲条目允许保留的业务字段白名单（写歌单时只拷贝这些键） */
-const TRACK_FIELDS = ['bvid', 'aid', 'cid', 'favId', 'favType', 'title', 'author', 'cover', 'duration', 'playCount', 'pubdate', 'description', 'videos', 'isBiliFavoriteResource']
 
 /**
- * 从任意对象中抽出歌曲条目应有的字段，并补齐标题/作者/封面兜底。
- * 关键：不再整体展开源对象（旧实现的 `...music` 会把事件对象上的
- * isTrusted/_vts 等杂散键一并写进歌单）。
+ * 歌单封面同步规则：
+ *   - coverMode === 'custom' 时保留用户自定义封面，不覆盖
+ *   - B 站收藏夹保留 B 站云端封面
+ *   - 其余情况封面跟随第一首曲目（本地曲封面即内嵌图/同目录图）
  */
-function pickTrackFields(music) {
-  const out = {}
-  if (!music || typeof music !== 'object') return out
-  for (const k of TRACK_FIELDS) {
-    if (music[k] !== undefined && music[k] !== null) out[k] = music[k]
+export function syncPlaylistCover(playlist) {
+  if (!playlist) return
+  if (playlist.coverMode === 'custom') return
+  if (playlist.isBiliFavorite) return
+  playlist.cover = playlist.music?.[0]?.cover || ''
+}
+
+/**
+ * 装着本地曲副本的所有容器：所有用户歌单 + 当前查看的歌单
+ * （currentPlaylist 可能不是 userPlaylists 成员，例如「本地音乐」虚拟歌单）。
+ */
+function collectLocalTargets(store) {
+  const targets = []
+  for (const pl of store.userPlaylists) {
+    if (pl && Array.isArray(pl.music)) targets.push(pl)
   }
-  out.title = out.title || '未知标题'
-  out.author = out.author || '未知作者'
-  out.cover = out.cover || ''
-  out.duration = out.duration || 0
-  out.bvid = out.bvid || ''
-  out.cid = out.cid ?? (music.cid ?? null)
-  return out
+  const cur = store.currentPlaylist
+  if (cur && Array.isArray(cur.music) && !targets.includes(cur)) targets.push(cur)
+  return targets
 }
 
 /**
@@ -488,10 +480,35 @@ export const usePlaylistStore = defineStore('playlist', {
         id: generatePlaylistId(),
         name: name || '新建歌单',
         music: [],
+        coverMode: 'auto',
         ...extra
       }
       this.userPlaylists.push(playlist)
       return playlist
+    },
+
+    /**
+     * 设置歌单自定义封面（coverMode='custom' 后不再被首曲封面覆盖）。
+     * @param {string} playlistId
+     * @param {string} coverUrl 由主进程 local-save-cover 返回的 pinkmusic-local:// 地址
+     */
+    async setPlaylistCover(playlistId, coverUrl) {
+      const pl = this.userPlaylists.find(p => p.id === playlistId)
+      if (!pl || !coverUrl) return false
+      pl.cover = coverUrl
+      pl.coverMode = 'custom'
+      await this.savePlaylists()
+      return true
+    },
+
+    /** 恢复歌单封面为「跟随第一首」 */
+    async resetPlaylistCover(playlistId) {
+      const pl = this.userPlaylists.find(p => p.id === playlistId)
+      if (!pl) return false
+      pl.coverMode = 'auto'
+      syncPlaylistCover(pl)
+      await this.savePlaylists()
+      return true
     },
 
     /**
@@ -610,24 +627,76 @@ export const usePlaylistStore = defineStore('playlist', {
         return target
       }
       if (!target.music) target.music = []
-      // bvid 必须匹配；cid 同时存在时才要求一致（search/recommended 结果可能无 cid）
-      const exists = target.music.some(m =>
-        m && music && (m.bvid ?? null) === (music.bvid ?? null) &&
-        ((m.cid ?? null) !== null && (music.cid ?? null) !== null
-          ? (m.cid ?? null) === (music.cid ?? null)
-          : true)
-      )
+      // 统一身份判重（本地曲走 id，B 站曲走 bvid+cid / favId）
+      const exists = target.music.some(m => sameTrack(m, music))
       if (!exists) {
         // 规范化：只抽取歌曲字段并补齐标题/作者/封面（不再整体展开 music，
         // 避免事件对象上的 isTrusted/_vts 等杂散键被持久化）
         target.music.push(pickTrackFields(music))
       }
-      // 封面始终跟随第一首音乐（B 站收藏夹保留 B 站云端封面）
+      // 封面默认跟随第一首音乐（B 站收藏夹保留 B 站云端封面；自定义封面不覆盖）
       if (!target.isBiliFavorite) {
-        target.cover = target.music[0]?.cover || ''
+        syncPlaylistCover(target)
       }
       await this.savePlaylists()
       return target
+    },
+
+    /**
+     * 把本地曲失效标记同步到歌单里的副本。
+     * 歌单存的是曲目副本（不是本地库引用），不同步就会永远显示旧的失效状态。
+     * @param {Object<string, boolean>} flagsById 本地曲 id → isMissing
+     * @returns {Promise<number>} 被改写的副本条目数
+     */
+    async syncLocalTrackFlags(flagsById) {
+      if (!flagsById || typeof flagsById !== 'object') return 0
+      let changed = 0
+      for (const pl of collectLocalTargets(this)) {
+        for (const m of pl.music) {
+          if (!m || m.source !== 'local') continue
+          const flag = flagsById[m.id]
+          if (typeof flag === 'boolean' && m.isMissing !== flag) {
+            m.isMissing = flag
+            changed++
+          }
+        }
+      }
+      if (changed > 0) await this.savePlaylists()
+      return changed
+    },
+
+    /**
+     * 本地曲重定位后换 id：把歌单里的旧副本替换成新曲目，并按 trackKey 去重
+     * （新曲目已在歌单里时只删旧副本，不重复插入；否则占据旧副本的位置）。
+     * @param {string} oldId 旧本地曲 id
+     * @param {object} newTrack 重定位后的本地曲（带新 id / 新路径）
+     * @returns {Promise<number>} 被替换掉的旧副本条目数
+     */
+    async remapLocalTrack(oldId, newTrack) {
+      if (!oldId || !newTrack || !newTrack.id) return 0
+      const replacement = pickTrackFields(newTrack)
+      const newKey = trackKey(replacement)
+      if (!newKey) return 0
+      let replaced = 0
+      for (const pl of collectLocalTargets(this)) {
+        let insertAt = -1
+        const music = []
+        for (const m of pl.music) {
+          if (m && m.source === 'local' && m.id === oldId) {
+            if (insertAt < 0) insertAt = music.length
+            replaced++
+            continue
+          }
+          music.push(m)
+        }
+        if (insertAt < 0) continue
+        if (!music.some(m => trackKey(m) === newKey)) {
+          music.splice(insertAt, 0, { ...replacement })
+        }
+        pl.music = music
+      }
+      if (replaced > 0) await this.savePlaylists()
+      return replaced
     },
 
     /**

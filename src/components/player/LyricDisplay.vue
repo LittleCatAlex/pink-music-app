@@ -458,7 +458,7 @@ function getSubLines(line) {
         <div class="lyric-actions">
           <button
             class="action-btn"
-            @click="adjustOffset(-OFFSET_STEP)"
+            @click="adjustOffset(OFFSET_STEP)"
             :title="'歌词提前 0.5s'"
           >
             <span class="ab-arrow">«</span>
@@ -475,7 +475,7 @@ function getSubLines(line) {
           </button>
           <button
             class="action-btn"
-            @click="adjustOffset(OFFSET_STEP)"
+            @click="adjustOffset(-OFFSET_STEP)"
             :title="'歌词延迟 0.5s'"
           >
             <span>0.5s</span>

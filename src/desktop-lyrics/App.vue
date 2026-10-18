@@ -21,6 +21,7 @@ const baseTime = ref(0)        // 秒
 const isPlaying = ref(false)
 let anchorPerfNow = 0          // 收到快照瞬间对应的本地 performance.now()
 let rafId = 0
+let lineDirty = true           // 是否有新快照需要重算行号（未播放时省掉逐帧重算）
 const interpolatedTime = ref(0)
 
 // ───────── UI 状态 ─────────
@@ -66,6 +67,7 @@ function applyProgress(payload) {
   baseTime.value = Number(payload.currentTime) || 0
   isPlaying.value = !!payload.isPlaying
   anchorPerfNow = performance.now() - Math.max(0, Date.now() - (Number(payload.sentAt) || Date.now()))
+  lineDirty = true
 }
 
 function applyStyle(style) {
@@ -109,9 +111,14 @@ function seekTo(line) {
 function tick() {
   if (isPlaying.value) {
     interpolatedTime.value = baseTime.value + Math.max(0, performance.now() - anchorPerfNow) / 1000
+  } else if (!lineDirty) {
+    // 未播放且没有新进度/样式/歌词到达：时间与行号都不会变，不必逐帧重算
+    rafId = requestAnimationFrame(tick)
+    return
   } else {
     interpolatedTime.value = baseTime.value
   }
+  lineDirty = false
   const idx = findLineIndexAtTime(lines.value, interpolatedTime.value, offsetMs.value)
   if (idx !== currentLineIndex.value) currentLineIndex.value = idx
   rafId = requestAnimationFrame(tick)
@@ -130,8 +137,9 @@ onMounted(() => {
         lines.value = Array.isArray(payload.lines) ? payload.lines : []
         offsetMs.value = Number(payload.offsetMs) || 0
         currentLineIndex.value = -1
+        lineDirty = true
         break
-      case 'style': applyStyle(payload); break
+      case 'style': applyStyle(payload); lineDirty = true; break
     }
   })
   syncIgnoreMouse()

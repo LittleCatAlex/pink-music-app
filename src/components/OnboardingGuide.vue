@@ -9,7 +9,7 @@ const themeStore = useThemeStore()
 // 首次启动才显示（state 初始化走 localStorage peek，同步可得，无闪烁）
 const visible = computed(() => !settingsStore.onboardingCompleted)
 
-const TOTAL_STEPS = 7
+const TOTAL_STEPS = 8
 const step = ref(0)
 
 // 桌面歌词快捷键展示文案（跟随设置项，按平台转写）
@@ -89,7 +89,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeyDown))
           <!-- 步骤 1：发现音乐 -->
           <div v-else-if="step === 1" key="s1" class="ob-step">
             <h2 class="ob-title">发现音乐</h2>
-            <p class="ob-desc">底部导航栏可在四个页面间切换</p>
+            <p class="ob-desc">底部导航栏可在五个页面间切换</p>
             <div class="ob-feature-list">
               <div class="ob-feature">
                 <span class="ob-icon">
@@ -116,6 +116,15 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeyDown))
                 <div>
                   <h4>歌单</h4>
                   <p>创建歌单整理音乐，支持多 P 视频导入</p>
+                </div>
+              </div>
+              <div class="ob-feature">
+                <span class="ob-icon">
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
+                </span>
+                <div>
+                  <h4>本地</h4>
+                  <p>导入自己电脑里的音频，与 B 站曲目一起播放</p>
                 </div>
               </div>
               <div class="ob-feature">
@@ -239,8 +248,44 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeyDown))
             </div>
           </div>
 
-          <!-- 步骤 5：快速设置（交互式） -->
+          <!-- 步骤 5：本地音乐（专页） -->
           <div v-else-if="step === 5" key="s5" class="ob-step">
+            <h2 class="ob-title">本地音乐</h2>
+            <p class="ob-desc">底部导航栏的「本地」页面，播放你自己收藏的音频文件</p>
+            <div class="ob-feature-list">
+              <div class="ob-feature">
+                <span class="ob-icon">
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+                </span>
+                <div>
+                  <h4>导入文件 / 文件夹</h4>
+                  <p>选音频或整个文件夹，可按文件夹名建同名歌单</p>
+                </div>
+              </div>
+              <div class="ob-feature">
+                <span class="ob-icon">
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
+                </span>
+                <div>
+                  <h4>匹配封面</h4>
+                  <p>缺封面的曲目可匹配云端封面，也可手动搜索</p>
+                </div>
+              </div>
+              <div class="ob-feature">
+                <span class="ob-icon">
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+                </span>
+                <div>
+                  <h4>失效检测</h4>
+                  <p>文件被移动会标记失效，可一键重新定位</p>
+                </div>
+              </div>
+            </div>
+            <p class="ob-hint">本地曲可直接加进歌单<br>wma / ape / dsf 等格式默认收录并标记为需转码</p>
+          </div>
+
+          <!-- 步骤 6：快速设置（交互式） -->
+          <div v-else-if="step === 6" key="s6" class="ob-step">
             <h2 class="ob-title">先调调外观</h2>
             <p class="ob-desc">这几项现在就能试，随时可在「我的 → 设置」里更改</p>
             <div class="ob-quick-settings">
@@ -281,8 +326,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeyDown))
             </div>
           </div>
 
-          <!-- 步骤 6：完成 -->
-          <div v-else key="s6" class="ob-step ob-step-welcome">
+          <!-- 步骤 7：完成 -->
+          <div v-else key="s7" class="ob-step ob-step-welcome">
             <img class="ob-logo ob-logo-img ob-logo-img-sm" :src="pinkLogo" alt="Pink Music 应用图标" />
             <h2 class="ob-title text-gradient">一切就绪</h2>
             <p class="ob-desc">更多设置（音质、均衡器、歌词、下载目录等）<br>都在「我的 → 设置」里</p>

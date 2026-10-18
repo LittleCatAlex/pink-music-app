@@ -91,6 +91,12 @@ export function attachAudioAnalyser(audioEl) {
     return analyser
   } catch (err) {
     console.error('[audioAnalyser] attach 失败:', err)
+    // 半初始化回滚：否则下次 attach 会因 currentAudio 已记录而误判为已连接
+    try { if (currentSource) currentSource.disconnect() } catch (_) {}
+    try { if (analyser) analyser.disconnect() } catch (_) {}
+    currentAudio = null
+    currentSource = null
+    analyser = null
     return null
   }
 }
@@ -108,19 +114,23 @@ export function isAnalyserReady() {
 }
 
 /**
- * 释放资源（应用退出时调用）
+ * 释放资源（应用退出时调用）。可安全重复调用。
  */
 export function destroyAudioAnalyser() {
   try { if (currentSource) currentSource.disconnect() } catch (_) {}
   try { if (analyser) analyser.disconnect() } catch (_) {}
   try { if (compressor) compressor.disconnect() } catch (_) {}
-  destroyEQ()
-  if (audioContext) {
-    audioContext.close().catch(() => {})
-  }
+  try { destroyEQ() } catch (_) {}
+  // 先清空模块级状态，重复调用时直接空转
+  const ctx = audioContext
   audioContext = null
   currentSource = null
   currentAudio = null
   analyser = null
   compressor = null
+  if (ctx) {
+    try {
+      if (ctx.state !== 'closed') ctx.close().catch(() => {})
+    } catch (_) {}
+  }
 }

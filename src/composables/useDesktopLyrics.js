@@ -1,5 +1,6 @@
 import { ref, computed, watch, onUnmounted } from 'vue'
 import { usePlayerStore, useLyricStore, useSettingsStore, useThemeStore } from '@/stores'
+import { getAudioEl } from '../utils/audioEngine.js'
 
 /**
  * 桌面歌词（悬浮窗）主窗口侧桥接。
@@ -41,13 +42,28 @@ export function useDesktopLyrics({ onSeek } = {}) {
   }
 
   // ───────── 各类状态推送 ─────────
+  /**
+   * 取实时播放进度：优先读 <audio> 元素。
+   * playerStore.currentTime 由 timeupdate 驱动，落后真实进度最多约 250ms，
+   * 直接推它会让歌词窗整体滞后；元素不可用时再回退 store。
+   */
+  function readLiveTime() {
+    try {
+      const t = getAudioEl()?.currentTime
+      if (Number.isFinite(t) && t >= 0) return t
+    } catch (_) {}
+    return Number(playerStore.currentTime) || 0
+  }
+
   function pushProgress() {
     if (!dlEnabled.value) return
+    const currentTime = readLiveTime()
+    const sentAt = Date.now()   // 快照时刻；跨进程用系统墙钟对齐，歌词窗换算到本地单调钟插值
     send({
       type: 'progress',
-      currentTime: Number(playerStore.currentTime) || 0,
+      currentTime,
       isPlaying: !!playerStore.isPlaying,
-      sentAt: Date.now()   // 跨进程用系统墙钟对齐，歌词窗换算到本地单调钟插值
+      sentAt
     })
   }
 
@@ -110,12 +126,26 @@ export function useDesktopLyrics({ onSeek } = {}) {
   }
 
   // ───────── 推送循环启停 ─────────
+  /**
+   * 250ms 定时推送只在播放中开启：暂停时进度不动，继续轮询纯属空转。
+   * 恢复播放时立即补推一帧再重启定时器，歌词窗不会等首个 250ms。
+   */
+  function syncProgressTimer() {
+    if (!started) return
+    if (playerStore.isPlaying) {
+      if (!pushTimer) pushTimer = setInterval(pushProgress, 250)
+      pushProgress()
+    } else if (pushTimer) {
+      clearInterval(pushTimer)
+      pushTimer = null
+    }
+  }
+
   function startPushing() {
-    if (started) { pushAll(); return }
+    if (started) { pushAll(); syncProgressTimer(); return }
     started = true
     pushAll()
-    // paused 时 timeupdate 不触发，靠定时器持续兜底推送最新快照
-    pushTimer = setInterval(pushProgress, 250)
+    syncProgressTimer()
   }
 
   function stopPushing() {
@@ -181,8 +211,15 @@ export function useDesktopLyrics({ onSeek } = {}) {
     () => pushStyle(),
     { flush: 'post' }
   ))
-  // 播放/暂停瞬间立即推一帧，避免歌词窗停在旧状态最长 250ms
-  watches.push(watch(() => playerStore.isPlaying, () => pushProgress()))
+  // 播放/暂停瞬间立即推一帧，并按新状态启停 250ms 定时器
+  watches.push(watch(() => playerStore.isPlaying, () => {
+    pushProgress()
+    syncProgressTimer()
+  }))
+  // 暂停时定时器已停，但拖动进度条仍要把新位置同步过去（timeupdate 会刷新 store 的 currentTime）
+  watches.push(watch(() => playerStore.currentTime, () => {
+    if (!playerStore.isPlaying) pushProgress()
+  }))
 
   let unsubCommand = null
   let unsubVisibility = null

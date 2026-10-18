@@ -13,11 +13,14 @@ let _persistChain = Promise.resolve()
 // （默认值与 electron/main.js 的 DESKTOP_LYRICS_HOTKEY_DEFAULT 互指，改动需两处同步）
 // Schema v8：新增首次启动引导完成标记 onboardingCompleted
 // Schema v9：新增启动时自动检查更新开关 checkUpdateOnStartup
+// Schema v10：新增本地音乐库相关开关 localIncludeUnplayable / localCheckMissingOnStartup
+// Schema v11：新增本地封面自动匹配开关 localAutoFetchCover
 const settingsSchema = defineSchema({
-  version: 9,
+  version: 11,
   fields: {
     audioQuality: s.enum(['auto', 'lossless', 'high', 'medium', 'low'], 'auto'),
-    audioVisualizerEnabled: s.boolean(true),
+    // 首次启动默认关闭：可视化较吃性能，需要时在引导页或「我的 → 设置」里开启
+    audioVisualizerEnabled: s.boolean(false),
     audioVisualizerIntensity: s.number(0, 1, 0.6),
     eqEnabled: s.boolean(true),
     eqBands: s.array(s.number(-12, 12, 0), 10),
@@ -27,7 +30,11 @@ const settingsSchema = defineSchema({
     desktopLyricsLocked: s.boolean(false),
     desktopLyricsHotkey: s.string('CommandOrControl+D'),
     onboardingCompleted: s.boolean(false),
-    checkUpdateOnStartup: s.boolean(true)
+    checkUpdateOnStartup: s.boolean(true),
+    // 本地音乐库
+    localIncludeUnplayable: s.boolean(true),
+    localCheckMissingOnStartup: s.boolean(true),
+    localAutoFetchCover: s.boolean(false)
   },
   migrations: {
     2: (data) => ({ ...data, windowControlsEnabled: data.windowControlsEnabled ?? true }),
@@ -44,7 +51,15 @@ const settingsSchema = defineSchema({
     // v7 → v8：补首次启动引导完成标记默认值
     7: (data) => ({ ...data, onboardingCompleted: data.onboardingCompleted ?? false }),
     // v8 → v9：补启动时自动检查更新开关默认值
-    8: (data) => ({ ...data, checkUpdateOnStartup: data.checkUpdateOnStartup ?? true })
+    8: (data) => ({ ...data, checkUpdateOnStartup: data.checkUpdateOnStartup ?? true }),
+    // v9 → v10：补本地音乐库开关默认值
+    9: (data) => ({
+      ...data,
+      localIncludeUnplayable: data.localIncludeUnplayable ?? true,
+      localCheckMissingOnStartup: data.localCheckMissingOnStartup ?? true
+    }),
+    // v10 → v11：补本地封面自动匹配开关默认值（默认关闭，避免导入时大量网络请求）
+    10: (data) => ({ ...data, localAutoFetchCover: data.localAutoFetchCover ?? false })
   }
 })
 
@@ -79,7 +94,7 @@ export const useSettingsStore = defineStore('settings', {
     audioQuality: _peekedSettings.audioQuality ?? 'auto',
     audioVisualizerEnabled: typeof _peekedSettings.audioVisualizerEnabled === 'boolean'
       ? _peekedSettings.audioVisualizerEnabled
-      : true,
+      : false,
     audioVisualizerIntensity: typeof _peekedSettings.audioVisualizerIntensity === 'number'
       ? _peekedSettings.audioVisualizerIntensity
       : 0.6,
@@ -101,7 +116,14 @@ export const useSettingsStore = defineStore('settings', {
     onboardingCompleted: _peekedSettings.onboardingCompleted === true,
     checkUpdateOnStartup: typeof _peekedSettings.checkUpdateOnStartup === 'boolean'
       ? _peekedSettings.checkUpdateOnStartup
-      : true
+      : true,
+    localIncludeUnplayable: typeof _peekedSettings.localIncludeUnplayable === 'boolean'
+      ? _peekedSettings.localIncludeUnplayable
+      : true,
+    localCheckMissingOnStartup: typeof _peekedSettings.localCheckMissingOnStartup === 'boolean'
+      ? _peekedSettings.localCheckMissingOnStartup
+      : true,
+    localAutoFetchCover: _peekedSettings.localAutoFetchCover === true
   }),
   actions: {
     /**
@@ -123,6 +145,9 @@ export const useSettingsStore = defineStore('settings', {
         if (typeof data.desktopLyricsHotkey === 'string' && data.desktopLyricsHotkey) this.desktopLyricsHotkey = data.desktopLyricsHotkey
         if (typeof data.onboardingCompleted === 'boolean') this.onboardingCompleted = data.onboardingCompleted
         if (typeof data.checkUpdateOnStartup === 'boolean') this.checkUpdateOnStartup = data.checkUpdateOnStartup
+        if (typeof data.localIncludeUnplayable === 'boolean') this.localIncludeUnplayable = data.localIncludeUnplayable
+        if (typeof data.localCheckMissingOnStartup === 'boolean') this.localCheckMissingOnStartup = data.localCheckMissingOnStartup
+        if (typeof data.localAutoFetchCover === 'boolean') this.localAutoFetchCover = data.localAutoFetchCover
         applyEQToEngine(this.eqEnabled, this.eqBands)
       }
     },
@@ -158,6 +183,21 @@ export const useSettingsStore = defineStore('settings', {
     },
     setCheckUpdateOnStartup(enabled) {
       this.checkUpdateOnStartup = !!enabled
+      this.persist()
+    },
+    /** 本地音乐库：是否收录 Chromium 无法直接播放的格式（wma/ape/dsf 等，标记为需转码） */
+    setLocalIncludeUnplayable(enabled) {
+      this.localIncludeUnplayable = !!enabled
+      this.persist()
+    },
+    /** 本地音乐库：启动时是否自动校验文件是否仍存在 */
+    setLocalCheckMissingOnStartup(enabled) {
+      this.localCheckMissingOnStartup = !!enabled
+      this.persist()
+    },
+    /** 本地音乐库：导入后是否自动为缺失封面匹配云端封面（参考 LrcApi） */
+    setLocalAutoFetchCover(enabled) {
+      this.localAutoFetchCover = !!enabled
       this.persist()
     },
     setLyricDisplayMode(mode) {
@@ -240,7 +280,10 @@ export const useSettingsStore = defineStore('settings', {
           desktopLyricsLocked: this.desktopLyricsLocked,
           desktopLyricsHotkey: this.desktopLyricsHotkey,
           onboardingCompleted: this.onboardingCompleted,
-          checkUpdateOnStartup: this.checkUpdateOnStartup
+          checkUpdateOnStartup: this.checkUpdateOnStartup,
+          localIncludeUnplayable: this.localIncludeUnplayable,
+          localCheckMissingOnStartup: this.localCheckMissingOnStartup,
+          localAutoFetchCover: this.localAutoFetchCover
         })
       })
       return _persistChain

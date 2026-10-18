@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, onUnmounted, computed, watch, nextTick } from 'vue'
+import { ref, onMounted, onUnmounted, onBeforeUnmount, computed, watch, nextTick } from 'vue'
 import { parseDuration, formatPlayCount, fixCoverUrl } from './utils/bilibili.js'
 import WindowControls from './components/WindowControls.vue'
 import AppDock from './components/AppDock.vue'
@@ -7,10 +7,11 @@ import MineView from './components/MineView.vue'
 import LyricDisplay from './components/player/LyricDisplay.vue'
 import AudioVisualizer from './components/AudioVisualizer.vue'
 import AlbumRipple from './components/AlbumRipple.vue'
-import { useLyricStore, usePlayerStore, useSettingsStore, useDownloadStore, useUserStore, usePlaylistStore, useThemeStore, useUpdateStore } from './stores'
+import { useLyricStore, usePlayerStore, useSettingsStore, useDownloadStore, useUserStore, usePlaylistStore, useThemeStore, useUpdateStore, useLocalStore } from './stores'
 import DownloadManager from './components/DownloadManager.vue'
 import LoginPanel from './components/LoginPanel.vue'
 import OnboardingGuide from './components/OnboardingGuide.vue'
+import LocalMusicView from './components/LocalMusicView.vue'
 import { applyLiquidGlass, destroyLiquidGlass } from './composables/useLiquidGlass'
 import { useDesktopLyrics } from './composables/useDesktopLyrics'
 import { useAudioPlayer } from './composables/useAudioPlayer'
@@ -25,13 +26,18 @@ import {
   prefetchTrack,
   computeBufferedPercent
 } from './utils/audioEngine'
-import { resolvePlaySource } from './utils/playUrlCache'
+import { destroyAudioAnalyser } from './utils/audioAnalyser.js'
+import { resolvePlaySource, toLocalUrl } from './utils/playUrlCache'
+import { isLocalTrack, trackKey as makeTrackKey, sameTrack, isTrackLike, pickTrackFields } from './utils/trackKey'
+import { syncPlaylistCover } from './stores/playlist'
 import { appConfirm } from './utils/confirm'
 import { flushPendingLocalWrites } from './utils/persistentStorage'
 import logger from './utils/logger'
 
 // flush 协议相关：保存 IPC 监听器反注册函数，HMR 时清理旧监听器，避免重复注册
 let unregisterFlushListener = null
+// 关窗前兜底 flush 监听（onMounted 注册，卸载时注销）
+let beforeUnloadFlush = null
 // HMR 兜底：模块级标记，让 vite HMR 重新执行前先清理旧监听器
 const HMR_FLUSH_KEY = '__pink_music_flush_listener_installed__'
 if (typeof window !== 'undefined' && window[HMR_FLUSH_KEY]) {
@@ -51,6 +57,7 @@ const userStore = useUserStore()
 const playlistStore = usePlaylistStore()
 const themeStore = useThemeStore()
 const updateStore = useUpdateStore()
+const localStore = useLocalStore()
 
 // Helper function to strip HTML tags
 function stripHtmlTags(html) {
@@ -63,23 +70,51 @@ function syncMediaSession() {
 }
 
 function setupMediaSessionHandlers() {
-  if (!('mediaSession' in navigator)) return;
-  
+  if (!('mediaSession' in navigator)) return
+
+  // play / pause 各自实现：系统面板发的是绝对指令，共用一个 toggle 会与面板状态互相拉扯
   navigator.mediaSession.setActionHandler('play', () => {
-    togglePlayPause()
-  });
-  
+    const el = getAudioEl()
+    if (!el.paused) return
+    Promise.resolve(playAudio()).then(() => {
+      isPlaying.value = true
+      playerStore.setIsPlaying(true)
+      syncMediaSession()
+    }).catch(() => {
+      isPlaying.value = false
+      playerStore.setIsPlaying(false)
+      syncMediaSession()
+    })
+  })
+
   navigator.mediaSession.setActionHandler('pause', () => {
-    togglePlayPause()
-  });
-  
+    const el = getAudioEl()
+    if (el.paused) return
+    pauseAudio()
+    isPlaying.value = false
+    playerStore.setIsPlaying(false)
+    syncMediaSession()
+  })
+
   navigator.mediaSession.setActionHandler('previoustrack', () => {
     playPrevious()
-  });
-  
+  })
+
   navigator.mediaSession.setActionHandler('nexttrack', () => {
     playNext()
-  });
+  })
+
+  // 系统面板拖动进度：部分平台不支持 seekto，注册与赋值都可能抛，整体兜住
+  try {
+    navigator.mediaSession.setActionHandler('seekto', (e) => {
+      if (e?.seekTime == null) return
+      try {
+        seekAudio(e.seekTime)
+        currentTime.value = e.seekTime
+        playerStore.setCurrentTime(e.seekTime)
+      } catch (_) {}
+    })
+  } catch (_) {}
 }
 
 // 主题由 themeStore 统一管理（MineView 设置 tab 提供切换入口），
@@ -305,6 +340,107 @@ async function playPlaylistAll(playlist) {
   await playMusic(list[0])
 }
 
+// ============= 本地音乐播放 =============
+/**
+ * 播放本地库中的一首歌。
+ * 先把 currentPlaylist 指向「本地音乐」虚拟歌单，让 handleTrackEnd/上一首下一首
+ * 能在本地库范围内续播（与歌单播放的语义一致）。
+ */
+async function playLocalTrack(track) {
+  if (!track) return
+  // 每次都用最新快照：virtualPlaylist 是 getter，tracks 变化后会返回新数组，不能按 id 复用旧引用
+  playlistStore.setCurrentPlaylist(localStore.virtualPlaylist)
+  await playMusic(track)
+}
+
+/**
+ * 本地曲缺封面时按 歌名/歌手 自动匹配一次云端封面。
+ * 与歌词的「播放即加载」同构；同一首失败后本次会话不再重试，避免反复打接口。
+ */
+const _coverTried = new Set()
+function autoFetchLocalCover(track) {
+  if (!track?.id || _coverTried.has(track.id)) return
+  _coverTried.add(track.id)
+  localStore.matchCoverFor(track).then((url) => {
+    if (url) {
+      // 当前正在播放的就是这首 → 同步刷新 UI 与 MediaSession 封面
+      if (currentTrack.value && makeTrackKey(currentTrack.value) === makeTrackKey(track)) {
+        currentTrack.value = { ...currentTrack.value, cover: url }
+        playerStore.setCurrentTrack(currentTrack.value)
+        syncMediaSession()
+      }
+    }
+  }).catch(() => {})
+}
+
+/** 播放整个本地库：优先用视图传入的当前可见顺序数组，缺省回退整库 */
+async function playLocalAll(list) {
+  const tracks = Array.isArray(list) && list.length > 0 ? list : (localStore.tracks || [])
+  if (tracks.length === 0) {
+    alert('本地音乐库还没有内容')
+    return
+  }
+  await playLocalTrack(tracks[0])
+}
+
+/**
+ * 从本地导入音频，并直接加入当前歌单。
+ * 同时写入本地库（这样本地视图里也能看到、能做失效检测）。
+ */
+async function openLocalImportToPlaylist() {
+  const pl = currentPlaylist.value
+  const api = window.electronAPI?.local
+  if (!pl || !api) return
+  const res = await api.importFiles()
+  if (res?.code !== 0 || !res.data?.length) {
+    if (res?.code !== 0) alert(res?.message || '选择文件失败')
+    return
+  }
+  try {
+    const parsed = await api.parseMetadata(res.data)
+    if (parsed?.code !== 0 || !Array.isArray(parsed.data)) {
+      alert(parsed?.message || '解析音频失败')
+      return
+    }
+    let tracks = parsed.data
+    if (!settingsStore.localIncludeUnplayable) {
+      tracks = tracks.filter(t => !t.isUnplayable)
+    }
+    await localStore.addTracks(tracks)
+    let added = 0
+    for (const t of tracks) {
+      if (!pl.music.some(m => sameTrack(m, t))) {
+        pl.music.push(pickTrackFields(t))
+        added++
+      }
+    }
+    syncPlaylistCover(pl)
+    const idx = playlistStore.userPlaylists.findIndex(p => p.id === pl.id)
+    if (idx >= 0) playlistStore.userPlaylists[idx] = { ...playlistStore.userPlaylists[idx], music: [...pl.music], cover: pl.cover }
+    await playlistStore.savePlaylists()
+    playlistStore.setCurrentPlaylist(playlistStore.userPlaylists.find(p => p.id === pl.id) || pl)
+    alert(added > 0 ? `已添加 ${added} 首本地音乐到「${pl.name}」` : '所选音乐已全部存在于该歌单中')
+  } catch (e) {
+    alert('导入失败：' + (e?.message || e))
+  }
+}
+
+/** 设置歌单自定义封面（coverMode='custom' 后不再被首曲封面覆盖） */
+async function changePlaylistCover(pl) {
+  if (!pl) return
+  const api = window.electronAPI?.local
+  if (!api) return alert('该功能仅在 Electron 环境中可用')
+  const res = await api.saveCover()
+  const url = res?.data?.url
+  if (res?.code !== 0) return alert(res?.message || '设置封面失败')
+  if (!url) return // 用户取消
+  await playlistStore.setPlaylistCover(pl.id, url)
+  const fresh = playlistStore.userPlaylists.find(p => p.id === pl.id)
+  if (fresh && currentPlaylist.value?.id === pl.id) {
+    playlistStore.setCurrentPlaylist(fresh)
+  }
+}
+
 async function confirmDeletePlaylist(playlist) {
   if (!playlist) return
   if (playlist.isDefault) return
@@ -489,7 +625,11 @@ function loadFavResourcesFor(playlist) {
  */
 function getTrackKey(music, index) {
   if (!music) return ''
-  return (music.bvid || '') + ':' + (music.favId ?? index) + ':' + (music.favType ?? '') + ':' + index
+  // 本地曲：稳定 id；B 站曲：bvid + favId + favType
+  const base = isLocalTrack(music)
+    ? makeTrackKey(music)
+    : (music.bvid || '') + ':' + (music.favId ?? '') + ':' + (music.favType ?? '')
+  return base + ':' + index
 }
 
 function enterTrackBatchMode() {
@@ -551,11 +691,7 @@ async function confirmDeleteTrack(music) {
   })
   if (!ok) return
   const list = pl.music || []
-  const idx = list.findIndex(m =>
-    (m.bvid || '') === (music.bvid || '') &&
-    (m.favId ?? null) === (music.favId ?? null) &&
-    (m.favType ?? null) === (music.favType ?? null)
-  )
+  const idx = list.findIndex(m => sameTrack(m, music))
   if (idx < 0) return
   list.splice(idx, 1)
   const pIdx = playlistStore.userPlaylists.findIndex(p => p.id === pl.id)
@@ -934,15 +1070,29 @@ function getRandomIndex(max) {
   return Math.floor(Math.random() * max)
 }
 
+/** 续播列表来源：歌单/本地视图用当前歌单，搜索页用搜索结果，其余用推荐列表 */
+function getPlaybackList() {
+  const view = currentView.value
+  if (view === 'playlist' || view === 'local') return currentPlaylist.value?.music || []
+  if (view === 'search') return searchResults.value || []
+  return recommendedMusic.value || []
+}
+
 function getNextMusicIndex() {
-  let musicList = currentView.value === 'search' ? searchResults.value : recommendedMusic.value
-  if (currentPlaylist.value?.music) {
-    musicList = currentPlaylist.value.music
-  }
+  const musicList = getPlaybackList()
 
   if (!musicList || musicList.length === 0) return -1
 
-  const currentIndex = musicList.findIndex(m => m.bvid === currentTrack.value?.bvid)
+  // 统一身份定位（本地曲走 id，B 站曲走 bvid+cid）
+  const curKey = makeTrackKey(currentTrack.value)
+  let currentIndex = musicList.findIndex(m => makeTrackKey(m) === curKey)
+  // 多P时当前曲是某一分P（cid 与列表项不同），先按 sameTrack 回退定位同一视频
+  if (currentIndex < 0) currentIndex = musicList.findIndex(m => sameTrack(m, currentTrack.value))
+  // sameTrack 在两边 cid 都非空时会比 cid，而分P 的 cid 与歌单项不同，故多P定位再退到只比 bvid
+  if (currentIndex < 0) {
+    const curBvid = currentTrack.value?.bvid
+    if (curBvid) currentIndex = musicList.findIndex(m => m?.bvid && m.bvid === curBvid)
+  }
 
   switch (playMode.value) {
     case 'single':
@@ -964,14 +1114,37 @@ function getNextMusicIndex() {
   }
 }
 
+// 切歌竞态守卫：每次 playMusic 领一个序号，只有最新序号的异步结果允许落地
+let playSeq = 0
+
 async function playMusic(music) {
+  const mySeq = ++playSeq
   logger.log('开始播放:', music?.title)
-  if (!music?.bvid && !music?.favId) {
+  const local = isLocalTrack(music)
+  // 本地曲没有 bvid/favId，但可正常播放；仅拦截真正的无效对象
+  if (!local && !music?.bvid && !music?.favId) {
     audioError.value = '该收藏内容暂不支持播放'
     playerStore.setAudioError(audioError.value)
     isAudioLoading.value = false
     playerStore.setIsAudioLoading(false)
     return
+  }
+  // 本地曲：文件失效 / 需转码格式直接给出明确提示，避免播放器静默失败
+  if (local) {
+    if (music.isMissing) {
+      audioError.value = '本地文件已移动或删除，请重新定位'
+      playerStore.setAudioError(audioError.value)
+      isAudioLoading.value = false
+      playerStore.setIsAudioLoading(false)
+      return
+    }
+    if (music.isUnplayable) {
+      audioError.value = '该格式暂不支持直接播放（需转码）'
+      playerStore.setAudioError(audioError.value)
+      isAudioLoading.value = false
+      playerStore.setIsAudioLoading(false)
+      return
+    }
   }
 
   currentTrack.value = music
@@ -992,20 +1165,36 @@ async function playMusic(music) {
   currentVideoEpisodes.value = []
   currentEpisodeIndex.value = 0
 
-  // 分P/合集与取流并行，不阻塞起播
-  loadVideoSeries(music.bvid)
+  // 分P/合集仅 B 站曲需要；本地曲跳过（无 bvid）
+  if (!local) {
+    loadVideoSeries(music.bvid)
+  } else if (!music.cover) {
+    // 本地曲无封面：与歌词「播放时自动加载」同构，按歌名/歌手匹配一次云端封面
+    autoFetchLocalCover(music)
+  }
   syncMediaSession()
 
   try {
-    const { src } = await playWithResolvedSrc(music, settingsStore.audioQuality, { forceReload: true })
-    logger.log('使用音频地址:', src)
+    const result = await playWithResolvedSrc(music, settingsStore.audioQuality, {
+      forceReload: true,
+      shouldAbort: () => mySeq !== playSeq
+    })
+    // 已被更新的切歌请求取代（引擎判过期，或 el.play() 期间又切了歌）：不回写状态也不预取
+    if (result?.aborted || mySeq !== playSeq) return
+    logger.log('使用音频地址:', result?.src)
     isPlaying.value = true
     playerStore.setIsPlaying(true)
     syncMediaSession()
     const nextMusic = peekNextTrack()
     if (nextMusic) prefetchTrack(nextMusic, settingsStore.audioQuality)
   } catch (error) {
+    // 旧请求的失败不能覆盖新曲状态
+    if (mySeq !== playSeq) return
     logger.error('播放失败:', error)
+    // 英文 DOMException 直接抛给用户没有意义，只有中文原因才透出
+    const reason = error?.message && /[一-龥]/.test(error.message) ? error.message : '音频加载失败'
+    audioError.value = reason
+    playerStore.setAudioError(reason)
     isAudioLoading.value = false
     playerStore.setIsAudioLoading(false)
     isPlaying.value = false
@@ -1016,12 +1205,11 @@ async function playMusic(music) {
 /** 只计算下一首，不触发播放（供预取用） */
 function peekNextTrack() {
   if (currentTrack.value && currentVideoEpisodes.value.length > 0) {
-    const idx = (currentEpisodeIndex.value + 1) % currentVideoEpisodes.value.length
-    return currentVideoEpisodes.value[idx] || null
+    const episode = currentVideoEpisodes.value[getNextEpisodeIndex()]
+    if (episode) return episode
   }
   const nextIndex = getNextMusicIndex()
-  const musicList = currentView.value === 'search' ? searchResults.value : recommendedMusic.value
-  const list = currentPlaylist.value?.music?.length ? currentPlaylist.value.music : musicList
+  const list = getPlaybackList()
   if (nextIndex >= 0 && list?.[nextIndex]) return list[nextIndex]
   return null
 }
@@ -1035,6 +1223,8 @@ async function loadVideoSeries(bvid) {
   try {
     // 获取视频详细信息，包含合集信息
     const result = await getWebInterfaceView({ bvid: bvid })
+    // 结果回来时当前曲已换成别的视频：整份丢弃，避免分P列表串台
+    if (currentTrack.value?.bvid !== bvid) return
     if (result.code === 0 && result.data.pages && result.data.pages.length > 1) {
       const episodes = result.data.pages.map((page, index) => ({
         bvid: bvid,
@@ -1073,6 +1263,7 @@ async function loadVideoSeries(bvid) {
       showSeriesPanel.value = false
     }
   } catch (error) {
+    if (currentTrack.value?.bvid !== bvid) return
     console.error('加载视频合集失败:', error)
     currentSeries.value = null
     currentVideoEpisodes.value = []
@@ -1082,8 +1273,13 @@ async function loadVideoSeries(bvid) {
 }
 
 function playFromSeries(episode) {
+  if (!episode) return
+  // 先定位这一集，避免合集接口返回前按第 1 集推进
+  const index = currentVideoEpisodes.value.findIndex(e => e.cid === episode.cid)
+  if (index >= 0) currentEpisodeIndex.value = index
   playMusic({
     bvid: episode.bvid,
+    cid: episode.cid,
     title: episode.title,
     author: episode.author || currentTrack.value?.author || '未知作者',
     cover: episode.cover || currentTrack.value?.cover,
@@ -1185,42 +1381,60 @@ function stopDownloadProgressMonitor() {
   downloadProgress.value = 0
 }
 
+/**
+ * 下一个分P 的下标；返回 -1 表示已到末P（不回绕，交回外层列表续播）。
+ * single 重播当前P，shuffle 随机其它P，order/loop 顺序取下一P。
+ */
+function getNextEpisodeIndex() {
+  const total = currentVideoEpisodes.value.length
+  if (total === 0) return -1
+  if (playMode.value === 'single') return currentEpisodeIndex.value
+  if (playMode.value === 'shuffle') {
+    let index
+    do {
+      index = getRandomIndex(total)
+    } while (total > 1 && index === currentEpisodeIndex.value)
+    return index
+  }
+  const next = currentEpisodeIndex.value + 1
+  return next < total ? next : -1
+}
+
+/**
+ * 用户点「下一首」时的分P 下标：忽略 single（single 下点下一首不该变成重播当前集）。
+ * shuffle 随机其它P，order/loop/single 顺序取下一P，已是末P 返回 -1。
+ */
+function getExplicitNextEpisodeIndex() {
+  const total = currentVideoEpisodes.value.length
+  if (total === 0) return -1
+  if (playMode.value === 'shuffle') {
+    let index
+    do {
+      index = getRandomIndex(total)
+    } while (total > 1 && index === currentEpisodeIndex.value)
+    return index
+  }
+  const next = currentEpisodeIndex.value + 1
+  return next < total ? next : -1
+}
+
 function handleTrackEnd() {
-  // Check if current track has episodes
+  // 多P：末P 不回绕，落到下面按外层列表的同一播放模式续播
   if (currentTrack.value && currentVideoEpisodes.value.length > 0) {
-    let nextEpisodeIndex
-    
-    if (playMode.value === 'shuffle') {
-      // Random episode
-      do {
-        nextEpisodeIndex = getRandomIndex(currentVideoEpisodes.value.length)
-      } while (currentVideoEpisodes.value.length > 1 && nextEpisodeIndex === currentEpisodeIndex.value)
-    } else {
-      // Next episode, wrap around
-      nextEpisodeIndex = (currentEpisodeIndex.value + 1) % currentVideoEpisodes.value.length
-    }
-    
-    const nextEpisode = currentVideoEpisodes.value[nextEpisodeIndex]
+    const nextEpisode = currentVideoEpisodes.value[getNextEpisodeIndex()]
     if (nextEpisode) {
       playEpisode(nextEpisode)
-    } else {
-      isPlaying.value = false
-      playerStore.setIsPlaying(false)
+      return
     }
+  }
+  // Normal song navigation
+  const musicList = getPlaybackList()
+  const nextIndex = getNextMusicIndex()
+  if (nextIndex >= 0 && musicList[nextIndex]) {
+    playMusic(musicList[nextIndex])
   } else {
-    // Normal song navigation
-    const nextIndex = getNextMusicIndex()
-    let musicList = currentView.value === 'search' ? searchResults.value : recommendedMusic.value
-    if (currentPlaylist.value?.music) {
-      musicList = currentPlaylist.value.music
-    }
-
-    if (nextIndex >= 0 && musicList && musicList[nextIndex]) {
-      playMusic(musicList[nextIndex])
-    } else {
-      isPlaying.value = false
-      playerStore.setIsPlaying(false)
-    }
+    isPlaying.value = false
+    playerStore.setIsPlaying(false)
   }
 }
 
@@ -1256,16 +1470,18 @@ function togglePlayPause() {
     pauseAudio()
     isPlaying.value = false
     playerStore.setIsPlaying(false)
+    syncMediaSession()
   } else {
     Promise.resolve(playAudio()).then(() => {
       isPlaying.value = true
       playerStore.setIsPlaying(true)
+      // 恢复播放后补一次同步，避免系统面板仍停在「暂停」
+      syncMediaSession()
     }).catch(() => {
       isPlaying.value = false
       playerStore.setIsPlaying(false)
     })
   }
-  syncMediaSession()
 }
 
 function playPrevious() {
@@ -1289,14 +1505,11 @@ function playPrevious() {
     }
   } else {
     // Normal song navigation
-    let musicList = currentView.value === 'search' ? searchResults.value : recommendedMusic.value
-    if (currentPlaylist.value?.music) {
-      musicList = currentPlaylist.value.music
-    }
+    const musicList = getPlaybackList()
 
     if (!musicList || musicList.length === 0) return
 
-    const currentIndex = musicList.findIndex(m => m.bvid === currentTrack.value?.bvid)
+    const currentIndex = musicList.findIndex(m => makeTrackKey(m) === makeTrackKey(currentTrack.value))
     let prevIndex
 
     if (playMode.value === 'shuffle') {
@@ -1314,35 +1527,19 @@ function playPrevious() {
 }
 
 function playNext() {
-  // Check if current track has episodes
+  // 多P：显式「下一首」忽略 single；末P 不回绕，落到下面按外层列表的同一播放模式续播
   if (currentTrack.value && currentVideoEpisodes.value.length > 0) {
-    let nextEpisodeIndex
-    
-    if (playMode.value === 'shuffle') {
-      // Random episode
-      do {
-        nextEpisodeIndex = getRandomIndex(currentVideoEpisodes.value.length)
-      } while (currentVideoEpisodes.value.length > 1 && nextEpisodeIndex === currentEpisodeIndex.value)
-    } else {
-      // Next episode, wrap around
-      nextEpisodeIndex = (currentEpisodeIndex.value + 1) % currentVideoEpisodes.value.length
-    }
-    
-    const nextEpisode = currentVideoEpisodes.value[nextEpisodeIndex]
+    const nextEpisode = currentVideoEpisodes.value[getExplicitNextEpisodeIndex()]
     if (nextEpisode) {
       playEpisode(nextEpisode)
+      return
     }
-  } else {
-    // Normal song navigation
-    const nextIndex = getNextMusicIndex()
-    let musicList = currentView.value === 'search' ? searchResults.value : recommendedMusic.value
-    if (currentPlaylist.value?.music) {
-      musicList = currentPlaylist.value.music
-    }
-
-    if (nextIndex >= 0 && musicList && musicList[nextIndex]) {
-      playMusic(musicList[nextIndex])
-    }
+  }
+  // Normal song navigation
+  const musicList = getPlaybackList()
+  const nextIndex = getNextMusicIndex()
+  if (nextIndex >= 0 && musicList[nextIndex]) {
+    playMusic(musicList[nextIndex])
   }
 }
 
@@ -1424,18 +1621,12 @@ function cancelCreatePlaylist() {
 }
 
 /**
- * 歌单封面始终跟随第一首音乐：
- * - 本地歌单（含默认收藏夹）用 music[0] 的封面，无音乐时清空（UI 自动回退占位图）
- * - B 站收藏夹（isBiliFavorite）封面来自 B 站云端元数据，不覆盖
- * @param {object} playlist
+ * 歌单封面同步统一走 stores/playlist.js 导出的 syncPlaylistCover：
+ * - 本地歌单（含默认收藏夹）跟随 music[0] 封面
+ * - coverMode === 'custom' 时保留用户自定义封面
+ * - B 站收藏夹（isBiliFavorite）保留云端封面
+ * 已在文件顶部 import，此处不再重复定义。
  */
-function syncPlaylistCover(playlist) {
-  if (!playlist || playlist.isBiliFavorite) return
-  const firstCover = playlist.music?.[0]?.cover || ''
-  if (playlist.cover !== firstCover) {
-    playlist.cover = firstCover
-  }
-}
 
 // ============= 重命名歌单 =============
 function openRenamePlaylist(playlist) {
@@ -1464,43 +1655,8 @@ function cancelRenamePlaylist() {
   renameValue.value = ''
 }
 
-/**
- * 判断对象是否"像一首歌"。
- * 真正的歌曲条目至少具备 bvid（B 站稿件号）、favId（B 站收藏项），
- * 或者有非空标题。DOM 事件对象（MouseEvent 等）没有这些字段——
- * 历史 bug 里模板的裸绑定 @click="openAddToPlaylistModal" 会把原生 click
- * 事件当参数传进来，随后被当成歌曲存进歌单，导致"空白标题 + 未知作者"。
- */
-function isTrackLike(music) {
-  if (!music || typeof music !== 'object') return false
-  const hasBvid = typeof music.bvid === 'string' && music.bvid.length > 0
-  const hasFavId = music.favId != null
-  const hasMeta = typeof music.title === 'string' && music.title.length > 0
-  return hasBvid || hasFavId || hasMeta
-}
-
-/** 歌曲条目允许保留的业务字段白名单（写歌单时只拷贝这些键） */
-const TRACK_FIELDS = ['bvid', 'aid', 'cid', 'favId', 'favType', 'title', 'author', 'cover', 'duration', 'playCount', 'pubdate', 'description', 'videos', 'isBiliFavoriteResource']
-
-/**
- * 从任意对象中抽出歌曲条目应有的字段，并补齐标题/作者/封面兜底。
- * 关键：不再整体展开源对象（旧实现的 `...music` 会把事件对象上的
- * isTrusted/_vts 等杂散键一起写进歌单）。
- */
-function pickTrackFields(music) {
-  const out = {}
-  if (!music || typeof music !== 'object') return out
-  for (const k of TRACK_FIELDS) {
-    if (music[k] !== undefined && music[k] !== null) out[k] = music[k]
-  }
-  out.title = out.title || '未知标题'
-  out.author = out.author || '未知作者'
-  out.cover = out.cover || ''
-  out.duration = out.duration || 0
-  out.bvid = out.bvid || ''
-  out.cid = out.cid ?? (music.cid ?? null)
-  return out
-}
+// isTrackLike / pickTrackFields / TRACK_FIELDS 统一收敛在 utils/trackKey.js，
+// 本地曲与 B 站曲共用同一套判定与字段白名单（已在文件顶部 import）。
 
 function openAddToPlaylistModal(music) {
   // 防御：如果传入的不是歌曲对象（例如裸绑定 @click 时 Vue 塞进来的
@@ -1532,13 +1688,8 @@ async function addToPlaylist(playlist) {
   if (!playlist.music) {
     playlist.music = []
   }
-  // bvid 必须匹配；cid 同时存在时才要求一致（search/recommended 结果可能无 cid）
-  const exists = playlist.music.some(m =>
-    m && music && (m.bvid ?? null) === (music.bvid ?? null) &&
-    ((m.cid ?? null) !== null && (music.cid ?? null) !== null
-      ? (m.cid ?? null) === (music.cid ?? null)
-      : true)
-  )
+  // 统一身份判重（本地曲走 id，B 站曲走 bvid+cid / favId）
+  const exists = playlist.music.some(m => sameTrack(m, music))
   if (!exists) {
     // 规范化：只保留歌曲字段 + 标题/作者/封面兜底（不再整体展开 music，
     // 避免把事件对象上的 isTrusted/_vts 等杂散键写进歌单）
@@ -1559,9 +1710,17 @@ async function downloadMusic(music) {
   try {
     isAudioLoading.value = true
 
+    // 本地曲已在磁盘上，无需下载；直接定位到文件
+    if (isLocalTrack(music)) {
+      isAudioLoading.value = false
+      try { await window.electronAPI?.local?.revealFile(music.filePath) } catch (_) {}
+      alert('这是本地文件，已在文件夹中为你定位')
+      return
+    }
+
     // 复用播放地址缓存（cid + playurl），避免下载与播放重复打接口
     const source = await resolvePlaySource(music, settingsStore.audioQuality)
-    if (!source?.url || source.url.includes('soundhelix.com')) {
+    if (!source?.url) {
       throw new Error('未找到音频地址')
     }
     const audioUrl = source.url
@@ -1712,6 +1871,14 @@ function handlePinkMusicEvent(event) {
     downloadStore.setShowDownloadManager(true)
   } else if (type === 'pink-music:open-login') {
     showLoginPanel.value = true
+  } else if (type === 'pink-music:open-playlist') {
+    // 本地导入完成 → 跳转到新建的歌单
+    const id = event.detail?.id
+    const pl = playlistStore.userPlaylists.find(p => p.id === id)
+    if (pl) {
+      playlistStore.setCurrentPlaylist(pl)
+      playlistStore.setCurrentView('playlist')
+    }
   } else if (type === 'pink-music:playlist-deleted') {
     // 侧边栏/AppDock 等不在父组件作用域的删除入口派发的事件
     // 如果删的就是当前正在查看的歌单，需要清理 + 跳回列表
@@ -1896,7 +2063,6 @@ onMounted(async () => {
       handleTrackEnd()
     }
   })
-  hostPlayer.ensureMediaSessionHandlers()
   // 本地 playMode 与 store 对齐（播放栏/引擎读 store，大屏读本地）
   if (playerStore.playMode) playMode.value = playerStore.playMode
 
@@ -1910,6 +2076,7 @@ onMounted(async () => {
   window.addEventListener('pink-music:open-download', handlePinkMusicEvent)
   window.addEventListener('pink-music:open-login', handlePinkMusicEvent)
   window.addEventListener('pink-music:playlist-deleted', handlePinkMusicEvent)
+  window.addEventListener('pink-music:open-playlist', handlePinkMusicEvent)
 
   // ───────── 持久化存储启动加载 ─────────
   // 各 store 的 load() 都会从主存储 userData/app-data/<key>.json 拉最新数据；
@@ -1926,8 +2093,14 @@ onMounted(async () => {
     playerStore.load(),
     lyricStore.load(),
     userStore.load(),
-    playlistStore.load()
+    playlistStore.load(),
+    localStore.load()
   ])
+
+  // 本地库失效检测：启动后台静默执行（不阻塞首屏），只标记不删除
+  if (settingsStore.localCheckMissingOnStartup && localStore.tracks.length > 0) {
+    localStore.checkMissing().catch(e => logger.warn('[App] 本地失效检测失败:', e?.message))
+  }
 
   // 版本更新：静默检查，排在首次引导之后 —— 引导未完成时不检查，避免与引导页抢占首屏
   updateStore.loadVersion()
@@ -1994,11 +2167,16 @@ onMounted(async () => {
   }
 
   // 兜底：浏览器原生 beforeunload 事件（双保险，覆盖 webview 之类场景）
-  const beforeUnloadFlush = () => {
+  beforeUnloadFlush = () => {
     try { playlistStore.flush?.(500) } catch (_) {}
   }
   window.addEventListener('beforeunload', beforeUnloadFlush)
   window.addEventListener('pagehide', beforeUnloadFlush)
+})
+
+onBeforeUnmount(() => {
+  // 卸载前释放 WebAudio 分析器（关闭 AudioContext），避免 HMR / 退出时泄漏
+  try { destroyAudioAnalyser() } catch (_) {}
 })
 
 onUnmounted(() => {
@@ -2014,12 +2192,21 @@ onUnmounted(() => {
   }
   // 注销下载目录变更监听
   settingsStore.unregisterDownloadDirListener()
+  // 注销下载进度监听
+  try { downloadStore.unregisterProgressListener() } catch (_) {}
+  // 注销关窗前兜底 flush 监听
+  if (beforeUnloadFlush) {
+    window.removeEventListener('beforeunload', beforeUnloadFlush)
+    window.removeEventListener('pagehide', beforeUnloadFlush)
+    beforeUnloadFlush = null
+  }
   if (window[HMR_FLUSH_KEY]) {
     window[HMR_FLUSH_KEY] = null
   }
   window.removeEventListener('pink-music:play-track', handlePinkMusicEvent)
   window.removeEventListener('pink-music:open-download', handlePinkMusicEvent)
   window.removeEventListener('pink-music:open-login', handlePinkMusicEvent)
+  window.removeEventListener('pink-music:open-playlist', handlePinkMusicEvent)
   liquidGlassInstances.forEach((inst) => destroyLiquidGlass(inst.id))
   liquidGlassInstances.clear()
 })
@@ -2455,6 +2642,24 @@ onUnmounted(() => {
                   <span>导出</span>
                 </button>
                 <button
+                  v-if="!currentPlaylist?.isBiliFavorite"
+                  @click="openLocalImportToPlaylist()"
+                  class="playlist-action-btn"
+                  title="从本地导入音频到这个歌单"
+                >
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
+                  <span>从本地添加</span>
+                </button>
+                <button
+                  v-if="!currentPlaylist?.isBiliFavorite"
+                  @click="changePlaylistCover(currentPlaylist)"
+                  class="playlist-action-btn"
+                  :title="currentPlaylist?.coverMode === 'custom' ? '当前为自定义封面，点击更换' : '设置自定义封面'"
+                >
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
+                  <span>封面</span>
+                </button>
+                <button
                   v-if="!currentPlaylist?.isDefault"
                   @click="openRenamePlaylist(currentPlaylist)"
                   class="playlist-action-btn"
@@ -2589,6 +2794,14 @@ onUnmounted(() => {
         </div>
         </div>
       </section>
+
+      <LocalMusicView
+        v-else-if="currentView === 'local'"
+        key="local"
+        @play="playLocalTrack"
+        @play-all="playLocalAll"
+        @add-to-playlist="openAddToPlaylistModal"
+      />
 
       <MineView v-else-if="currentView === 'mine'" key="mine" />
       </Transition>
@@ -2845,9 +3058,9 @@ onUnmounted(() => {
           <div class="series-list">
             <div
               v-for="(episode, index) in currentSeries.episodes"
-              :key="episode.bvid"
+              :key="episode.cid"
               class="series-item"
-              :class="{ active: episode.bvid === currentTrack?.bvid }"
+              :class="{ active: episode.cid === currentTrack?.cid }"
               @click="playFromSeries(episode)"
             >
               <span class="series-index">{{ index + 1 }}</span>

@@ -52,6 +52,10 @@ const initial = peekLyrics() || { cache: {}, offsets: {}, sources: {} }
 let _inflightKey = ''
 let _inflight = null
 
+// 启动期串行化：load() 记录自身 promise，persist() 在它未完成前先等它，
+// 避免 load 读回的旧快照覆盖掉内存里的新写入（如刚调整的歌词偏移）
+let _loadPromise = null
+
 export const useLyricStore = defineStore('lyric', {
   state: () => ({
     currentLyric: null,
@@ -79,7 +83,7 @@ export const useLyricStore = defineStore('lyric', {
       return this.currentLyric.lyrics[this.currentLineIndex]?.text || ''
     },
     lyricSourceLabel() {
-      const labels = { netease: '网易云', kugou: '酷狗', manual: '手动选择' }
+      const labels = { netease: '网易云', kugou: '酷狗', manual: '手动选择', local: '本地 LRC' }
       return labels[this.lyricSource] || ''
     },
     currentOffset() {
@@ -97,11 +101,18 @@ export const useLyricStore = defineStore('lyric', {
      * 启动时调用：从主存储拉取最新的 cache/offsets/sources（缺失时回退 localStorage 老 3 key 并自动迁移）。
      */
     async load() {
-      const data = await storage.load(null)
-      if (data && typeof data === 'object') {
-        if (data.cache && typeof data.cache === 'object') this.lyricCache = data.cache
-        if (data.offsets && typeof data.offsets === 'object') this.lyricOffsets = data.offsets
-        if (data.sources && typeof data.sources === 'object') this.lyricSources = data.sources
+      const task = storage.load(null).then((data) => {
+        if (data && typeof data === 'object') {
+          if (data.cache && typeof data.cache === 'object') this.lyricCache = data.cache
+          if (data.offsets && typeof data.offsets === 'object') this.lyricOffsets = data.offsets
+          if (data.sources && typeof data.sources === 'object') this.lyricSources = data.sources
+        }
+      })
+      _loadPromise = task
+      try {
+        await task
+      } finally {
+        _loadPromise = null
       }
     },
 
@@ -126,7 +137,11 @@ export const useLyricStore = defineStore('lyric', {
       return {
         ...lyric,
         lyrics,
-        _lyricV3: lyric._lyricV3 !== false
+        // 必须是恒等 true：缺失该标记 = 旧解析器产物（无 romaji/translation），
+        // 判为过期让 getCachedLyric 丢弃并重新抓取
+        _lyricV3: lyric._lyricV3 === true,
+        // 解析器版本：解析规则扩展时递增，旧产物按 0 处理（同样判为过期）
+        _lyricParserV: Number(lyric._lyricParserV) || 0
       }
     },
 
@@ -176,11 +191,12 @@ export const useLyricStore = defineStore('lyric', {
     },
 
     // —— cache key ——
+    // 第一个参数历史上是 bvid；本地曲改用稳定 id（bvid 为空会与其它曲撞 key）
     getCacheKey(bvid, cid, title = '', artist = '') {
       const safeTitle = String(title || '').replace(/[^\p{L}\p{N}]/gu, '').slice(0, 40)
       const safeArtist = String(artist || '').replace(/[^\p{L}\p{N}]/gu, '').slice(0, 20)
       // cid 统一字符串化，避免 number/string 双形态导致缓存键不一致
-      return `${bvid}-${cid ?? 1}-${safeArtist}-${safeTitle}`
+      return `${bvid ?? ''}-${cid ?? 1}-${safeArtist}-${safeTitle}`
     },
     getCachedLyric(bvid, cid, title, artist) {
       const key = this.getCacheKey(bvid, cid, title, artist)
@@ -193,8 +209,10 @@ export const useLyricStore = defineStore('lyric', {
       const fresh = cached.timestamp && Date.now() - cached.timestamp < 7 * 24 * 60 * 60 * 1000
       if (!isManual && !fresh) return null
       const data = this.normalizeLyric(cached.data)
-      // _lyricV3 缺失 = 旧解析器产物（romaji/translation 缺失），视为过期
-      if (data && data.lyrics.length > 0 && data._lyricV3) {
+      // 两个版本标记都过关才算命中：
+      //   _lyricV3 缺失 = 旧解析器产物（romaji/translation 缺失）
+      //   _lyricParserV < 4 = 旧解析规则产物（无时间戳变体 / 多时间戳 / [offset]）
+      if (data && data.lyrics.length > 0 && data._lyricV3 === true && data._lyricParserV >= 4) {
         return data
       }
       return null
@@ -220,6 +238,10 @@ export const useLyricStore = defineStore('lyric', {
      * 统一持久化：把 cache / offsets / sources 三件套作为一份 JSON 原子写。
      */
     async persist() {
+      // load 还没落地就先等它，保证写入发生在状态装载之后
+      if (_loadPromise) {
+        try { await _loadPromise } catch (_) {}
+      }
       const payload = {
         cache: this.lyricCache,
         offsets: this.lyricOffsets,
@@ -264,8 +286,10 @@ export const useLyricStore = defineStore('lyric', {
      */
     async loadLyricForTrack(track) {
       if (!track) return { success: false, error: 'no track' }
-      const bvid = track.bvid
-      const cid = track.cid ?? 1
+      const isLocal = track.source === 'local' || !!track.filePath
+      // 本地曲用稳定 id 作身份；B 站曲沿用 bvid
+      const bvid = isLocal ? (track.id || track.filePath || '') : track.bvid
+      const cid = isLocal ? 0 : (track.cid ?? 1)
       const title = track.title || ''
       const artist = track.author || ''
       const key = this.getCacheKey(bvid, cid, title, artist)
@@ -284,7 +308,10 @@ export const useLyricStore = defineStore('lyric', {
         this.lyricError = ''
       }
 
-      const task = this.fetchLyric(bvid, cid, title, artist)
+      const task = this.fetchLyric(bvid, cid, title, artist, {
+        isLocal,
+        lyricPath: track.lyricPath || ''
+      })
       _inflightKey = key
       _inflight = task.finally(() => {
         if (_inflightKey === key) {
@@ -295,9 +322,10 @@ export const useLyricStore = defineStore('lyric', {
       return _inflight
     },
 
-    async fetchLyric(bvid, cid, title, artist) {
+    async fetchLyric(bvid, cid, title, artist, { isLocal = false, lyricPath = '' } = {}) {
       const cacheKey = this.getCacheKey(bvid, cid, title, artist)
-      const cached = this.getCachedLyric(bvid, cid, title, artist)
+      // 本地曲：同名 .lrc 是唯一事实源，每次都从磁盘重读（用户改了歌词立即生效，不缓存）
+      const cached = isLocal ? null : this.getCachedLyric(bvid, cid, title, artist)
       if (cached) {
         // 过期响应防护：期间已切歌则丢弃
         if (this.currentKey !== cacheKey) {
@@ -312,6 +340,22 @@ export const useLyricStore = defineStore('lyric', {
 
       this.setIsLyricLoading(true)
       try {
+        // 本地曲优先读同目录 .lrc（纯本地，零网络）
+        if (isLocal && lyricPath) {
+          const localRes = await window.electronAPI?.local?.readLrc?.(lyricPath)
+          if (localRes?.code === 0 && localRes.data) {
+            if (this.currentKey !== cacheKey) return { success: false, error: 'stale' }
+            const lyric = this.normalizeLyric(this.parseLyric(localRes.data))
+            if (lyric && lyric.lyrics.length) {
+              this.setCurrentLyric(lyric)
+              this.setLyricSource('local')
+              this.setLoadedHash(cacheKey)
+              // 本地曲不写歌词缓存（.lrc 为唯一事实源）
+              return { success: true, fromCache: false, fromLrc: true }
+            }
+          }
+        }
+
         const result = await window.electronAPI.getLyric({ bvid, cid, title, artist })
         // 网络返回前用户可能已切歌：key 不一致则整段丢弃，避免 A 歌词盖到 B 上
         if (this.currentKey !== cacheKey) {

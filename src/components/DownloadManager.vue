@@ -1,9 +1,14 @@
 <script setup>
-import { useDownloadStore } from '@/stores'
+import { ref } from 'vue'
+import { useDownloadStore, useLocalStore } from '@/stores'
 import { formatAudioQualityLabel } from '@/utils/audio.js'
 import { appConfirm } from '@/utils/confirm'
 
 const downloadStore = useDownloadStore()
+const localStore = useLocalStore()
+
+// 正在「加入本地库」的任务 id（防重复点击）
+const addingIds = ref(new Set())
 
 function close() {
   downloadStore.setShowDownloadManager(false)
@@ -36,6 +41,42 @@ function getStatusText(status) {
 async function openDownloadFolder() {
   if (window.electronAPI) {
     await window.electronAPI.openDownloadFolder()
+  }
+}
+
+function isAdding(task) {
+  return addingIds.value.has(task.id)
+}
+
+/** 在系统文件管理器中定位已下载的文件 */
+async function revealTaskFile(task) {
+  if (!task?.filePath) return
+  try {
+    await window.electronAPI?.local?.revealFile(task.filePath)
+  } catch (_) {}
+}
+
+/** 把下载完成的文件解析成一条本地曲目，写进本地音乐库（store 侧写回由别处负责，这里只消费） */
+async function addTaskToLibrary(task) {
+  const filePath = task?.filePath
+  if (!filePath || isAdding(task)) return
+  const api = window.electronAPI?.local
+  if (!api) return alert('加入本地库仅在 Electron 环境中可用')
+  addingIds.value = new Set(addingIds.value).add(task.id)
+  try {
+    const res = await api.parseMetadata([filePath])
+    const track = res?.code === 0 && Array.isArray(res.data) ? res.data[0] : null
+    if (!track) return alert(res?.message || '解析文件失败')
+    const { added, skipped } = await localStore.addTracks([track])
+    if (added > 0) alert(`已加入本地库：${track.title || track.fileName || filePath}`)
+    else if (skipped > 0) alert('该文件已在本地音乐库中')
+    else alert('加入本地库失败')
+  } catch (e) {
+    alert('加入本地库失败：' + (e?.message || e))
+  } finally {
+    const next = new Set(addingIds.value)
+    next.delete(task.id)
+    addingIds.value = next
   }
 }
 
@@ -98,6 +139,9 @@ async function clearTasks() {
               <span>{{ formatTime(task.createdTime) }}</span>
             </div>
           </div>
+          <div v-if="task.filePath" class="download-item-path" :title="task.filePath">
+            {{ task.filePath }}
+          </div>
           <div class="download-item-status">
             <span class="status-text" :class="task.status">{{ getStatusText(task.status) }}</span>
           </div>
@@ -109,6 +153,12 @@ async function clearTasks() {
           </div>
           <div v-if="task.status === 'error' && task.error" class="download-item-error">
             {{ task.error }}
+          </div>
+          <div v-if="task.status === 'completed' && task.filePath" class="download-item-actions">
+            <button class="task-btn" @click="revealTaskFile(task)">在文件夹中显示</button>
+            <button class="task-btn" :disabled="isAdding(task)" @click="addTaskToLibrary(task)">
+              {{ isAdding(task) ? '加入中…' : '加入本地库' }}
+            </button>
           </div>
         </div>
       </div>
@@ -338,5 +388,41 @@ async function clearTasks() {
   margin-top: 8px;
   font-size: 12px;
   color: var(--error-color);
+}
+
+.download-item-path {
+  margin-bottom: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.download-item-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.task-btn {
+  padding: 5px 10px;
+  font-size: 12px;
+  color: var(--text-primary);
+  background: var(--bg-secondary, rgba(255, 255, 255, 0.06));
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.task-btn:hover:not(:disabled) {
+  border-color: var(--primary-color);
+  color: var(--primary-color);
+}
+
+.task-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 </style>
