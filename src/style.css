@@ -127,13 +127,43 @@
   --sidebar-width-collapsed: 80px;
   --player-height: 100px;
   --player-height-compact: 70px;
+
+  /* 外壳几何：Dock / 播放栏 / 顶栏占位的唯一来源（下划线处的魔法数一律改为读这里） */
+  --shell-dragbar-height: 38px;
+  --shell-topbar-height: 64px;
+  --dock-gap: 8px;            /* Dock 底边与播放栏顶边之间的间距 */
+  --dock-icon-size: 20px;
+  --dock-item-pad-y: 10px;
+  --dock-track-pad: 6px;
+  --dock-height: calc(var(--dock-icon-size) + var(--dock-item-pad-y) * 2 + var(--dock-track-pad) * 2 + 2px); /* 54px */
+  --shell-player: 0px;        /* 播放栏占位高度：无曲目 0，[data-has-player] 时 = --player-height */
+  --shell-dock-offset: 50px;  /* Dock 胶囊底边距视口底部的距离 */
+  --shell-bottom-reserve: calc(var(--shell-dock-offset) + var(--dock-height) + var(--spacing-lg));
+  /* 按钮命中区基线 */
+  --hit-min: 28px;
   
-  /* Z-index层级 */
+  /* Z-index 层级（唯一来源）：内容 < 吸顶顶栏 < 播放栏 < Dock < 下拉 < 弹窗 < 全屏播放页 < toast */
   --z-base: 1;
-  --z-dropdown: 10;
   --z-sticky: 20;
+  --z-topbar: 30;
+  --z-player: 60;
+  --z-dock: 70;
+  --z-dropdown: 80;
+  --z-player-page: 90;
+  --z-dragbar: 95;      /* 高于全屏播放页（窗口仍可从顶部拖动），低于弹窗 */
   --z-modal: 100;
+  --z-modal-top: 110;
   --z-toast: 200;
+  --z-window-controls: 900;
+
+  /* 页面内层级阶梯（A2）：只用于"页面区段"内部元素之间的相对压盖，
+     全部 ≤ 10，严格低于 --z-topbar(30)，因此页面内容永远压不住顶栏 / Dock / 弹窗。
+     页面区段里不允许再出现字面量 z-index。 */
+  --z-page-below: -1;    /* 相对负层：卡片/播放页的背景伪元素 */
+  --z-page-flat: 0;      /* 层化占位：让伪元素参与本层堆叠而不外溢 */
+  --z-page-raised: 2;    /* 页面内抬升：播放页内容层、卡片工具栏 */
+  --z-page-overlay: 5;   /* 卡片内浮层：批量勾选态 */
+  --z-page-float: 10;    /* 页面内浮动控件：进度条、播放页返回键 */
 
   /* Dock 栏（深色模式专用） */
   --dock-bg: rgba(255, 255, 255, 0.08);
@@ -414,9 +444,9 @@ body {
   top: 0;
   left: 0;
   right: 0;
-  height: 38px;
+  height: var(--shell-dragbar-height);
   -webkit-app-region: drag;
-  z-index: 1000;
+  z-index: var(--z-dragbar);
 }
 
 /* ==================== 主容器布局 ==================== */
@@ -427,7 +457,8 @@ body {
   background: var(--bg-primary);
   position: relative;
   overflow: hidden;
-  padding-top: 38px;
+  /* 顶部 38px 拖动条由 .app-container 的 grid 行提供；这里再写 padding-top:38px
+     会把顶栏再推下 38px（顶栏 y=76），空出一条无主的横带 */
   user-select: none;
   -webkit-user-select: none;
 }
@@ -452,7 +483,7 @@ body {
     radial-gradient(circle at 50% 50%, var(--accent-glow-subtle) 0%, transparent 60%);
   opacity: 0.4;
   pointer-events: none;
-  z-index: 0;
+  z-index: var(--z-page-flat);
   animation: bgFloat 30s ease-in-out infinite;
 }
 
@@ -474,7 +505,7 @@ body {
   background: 
     linear-gradient(180deg, transparent 0%, rgba(0,0,0,0.1) 100%);
   pointer-events: none;
-  z-index: 0;
+  z-index: var(--z-page-flat);
 }
 
 /* ==================== 侧边栏 ==================== */
@@ -510,7 +541,7 @@ body {
   border-bottom: 1px solid var(--border-color);
   margin-bottom: var(--spacing-lg);
   position: relative;
-  z-index: 1;
+  z-index: var(--z-base);
 }
 
 .logo {
@@ -591,7 +622,7 @@ body {
   height: 20px;
   color: var(--text-primary);
   position: relative;
-  z-index: 1;
+  z-index: var(--z-base);
   transition: transform var(--transition-smooth);
 }
 
@@ -606,7 +637,7 @@ body {
   overflow-x: hidden;
   padding: 0 var(--spacing-md);
   position: relative;
-  z-index: 1;
+  z-index: var(--z-base);
 }
 
 .sidebar nav::-webkit-scrollbar {
@@ -701,7 +732,7 @@ body {
   height: 22px;
   flex-shrink: 0;
   position: relative;
-  z-index: 1;
+  z-index: var(--z-base);
   transition: transform var(--transition-smooth);
 }
 
@@ -715,7 +746,7 @@ body {
 
 .nav-item span {
   position: relative;
-  z-index: 1;
+  z-index: var(--z-base);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -872,7 +903,10 @@ body {
 /* ==================== 主内容区 ==================== */
 .main-content {
   flex: 1;
-  height: 100vh;
+  /* 高度交给 grid 行（1fr）+ min-height:0；写死 100vh 会让滚动容器比可见区域
+     高出「拖动条 + 顶栏」的高度，滚到底时底部预留被顶出视口，最后一行被 Dock 盖住 */
+  height: auto;
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
   padding: var(--spacing-2xl) var(--spacing-3xl);
@@ -996,17 +1030,12 @@ body {
   background: var(--primary-color);
 }
 
-.main-content::before {
-  content: '';
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 60px;
-  background: linear-gradient(180deg, var(--bg-primary) 0%, transparent 100%);
-  pointer-events: none;
-  z-index: var(--z-dropdown);
-}
+/* .main-content::before 的 60px 固定顶部渐变已删除（A2）：
+   .main-content 是 position:relative + z-index:var(--z-base) 的层叠上下文，
+   该伪元素即便 z-index:var(--z-dropdown) 也被困在这一层里，实际永远被
+   拖动条(--z-dragbar:95) 与顶栏(--z-topbar:30) 遮住 —— 纯死层；
+   它的 left:220px 还是已下线侧边栏的遗留值。页面内容在本容器内滚动，
+   不会再滚到顶栏底下，因此不需要任何顶部渐隐层。 */
 
 /* 页面头部 */
 .header {
@@ -1132,7 +1161,7 @@ body {
   font-weight: var(--font-weight-bold);
   margin-bottom: var(--spacing-md);
   position: relative;
-  z-index: 1;
+  z-index: var(--z-base);
   letter-spacing: -0.5px;
   animation: titleEnter var(--anim-title-duration) var(--anim-page-easing) both;
 }
@@ -1141,7 +1170,7 @@ body {
   font-size: var(--text-lg);
   color: var(--text-secondary);
   position: relative;
-  z-index: 1;
+  z-index: var(--z-base);
   font-weight: var(--font-weight-light);
   animation: titleEnter var(--anim-title-duration) var(--anim-page-easing) both;
   animation-delay: 0.1s;
@@ -1367,7 +1396,7 @@ button:active:not(:disabled):not(.no-press),
   border-radius: var(--radius-full);
   letter-spacing: 0.3px;
   pointer-events: none;
-  z-index: 1;
+  z-index: var(--z-base);
 }
 
 .play-overlay {
@@ -1481,7 +1510,7 @@ button:active:not(:disabled):not(.no-press),
   border-radius: var(--radius-full);
   letter-spacing: 0.3px;
   pointer-events: none;
-  z-index: 1;
+  z-index: var(--z-base);
 }
 
 .card-title {
@@ -1492,7 +1521,7 @@ button:active:not(:disabled):not(.no-press),
   overflow: hidden;
   text-overflow: ellipsis;
   position: relative;
-  z-index: 1;
+  z-index: var(--z-base);
   background: var(--primary-gradient);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -1535,7 +1564,7 @@ button:active:not(:disabled):not(.no-press),
   align-items: center;
   padding: 0 var(--spacing-xl);
   gap: var(--spacing-xl);
-  z-index: var(--z-modal);
+  z-index: var(--z-player);
   /* 关键：与 .main-content padding-bottom / .dock bottom 同步到完全相同的 0.35s 缓动。
      之前 0.4s vs 0.35s 错位导致三套动画不同步结束，播放栏还在滑入时主内容区已
      提前到位 → 视觉"闪一下 + 内容跳动"。 */
@@ -1677,7 +1706,7 @@ button:active:not(:disabled):not(.no-press),
   width: 22px;
   height: 22px;
   position: relative;
-  z-index: 1;
+  z-index: var(--z-base);
 }
 
 /* 播放模式按钮 */
@@ -1781,7 +1810,7 @@ button:active:not(:disabled):not(.no-press),
   height: 100%;
   opacity: 0;
   cursor: pointer;
-  z-index: 10;
+  z-index: var(--z-page-float);
   -webkit-appearance: none;
   appearance: none;
   background: transparent;
@@ -1851,7 +1880,7 @@ button:active:not(:disabled):not(.no-press),
   /* 背景交给 AudioVisualizer：自身保持透明，频谱条成为真正的背景 */
   background: transparent;
   /* 移除 backdrop-filter：避免和可视化叠加产生摩尔纹 */
-  z-index: var(--z-toast);
+  z-index: var(--z-player-page);
   display: flex;
   align-items: stretch;
   justify-content: center;
@@ -1916,7 +1945,7 @@ button:active:not(:disabled):not(.no-press),
   background:
     linear-gradient(180deg, rgba(0,0,0,0.35) 0%, transparent 25%, transparent 75%, rgba(0,0,0,0.35) 100%);
   pointer-events: none;
-  z-index: 0;
+  z-index: var(--z-page-flat);
 }
 
 :root[data-theme="light"] .player-page::before {
@@ -1935,7 +1964,7 @@ button:active:not(:disabled):not(.no-press),
   padding: 80px 48px 48px;
   box-sizing: border-box;
   /* 浮在 AudioVisualizer 之上 */
-  z-index: 2;
+  z-index: var(--z-page-raised);
 }
 
 /* 暗角：让频谱条不抢阅读。
@@ -1947,7 +1976,7 @@ button:active:not(:disabled):not(.no-press),
   background:
     radial-gradient(ellipse 80% 70% at 50% 50%, rgba(0,0,0,0.18) 0%, transparent 75%);
   pointer-events: none;
-  z-index: -1;
+  z-index: var(--z-page-below);
 }
 
 /* 浅色主题：完全去掉径向暗角，避免压灰歌词和标题 */
@@ -1958,6 +1987,12 @@ button:active:not(:disabled):not(.no-press),
 .player-page-layout {
   display: grid;
   grid-template-columns: minmax(360px, 400px) 1fr;
+  /* 单行高度锁死在可用高度内（flex 剩余空间），行不再被左列 624px 的固有高度撑大。
+     这是歌词列能用 height:100% / %基于行 拿到"真实剩余高度"的前提：
+     改前该行是 auto，1000×700 下被撑到 624px（容器内容盒只有 588px），
+     .player-page-right 一路溢出到 y=704，超出 700 视口后被 .player-page 的
+     overflow:hidden 裁掉。 */
+  grid-template-rows: minmax(0, 1fr);
   align-items: center;
   justify-content: center;
   gap: 64px;
@@ -1985,15 +2020,65 @@ button:active:not(:disabled):not(.no-press),
   flex: 0 0 auto;
   width: 100%;
   max-width: 520px;
+  /* 左列固有高度固定 624px（封面 380 + 标题 + 进度 + 控制），矮视口下比行还高。
+     行改成 minmax(0,1fr) 之后，若让它在行内居中会把整列上移 18px（1000×700 实测），
+     这里把盒子夹在行高以内、内容照旧向下溢出，位置与改前逐像素一致。 */
+  max-height: 100%;
+}
+
+/* 盒子被夹到行高以内后，子项默认会被 flex 压缩（实测封面 380 → 344，属可见回归）。
+   锁死不被压缩：内容照旧向下溢出到视口边缘，视觉与改前完全一致。 */
+.player-page-left > * {
+  flex-shrink: 0;
 }
 
 .player-page-right {
   align-self: stretch;
   min-width: 0;
+  min-height: 0;
   height: 100%;
   display: flex;
   align-items: stretch;
   justify-content: center;
+}
+
+/* 超宽屏（≥2560）：改前左列写死 400px、内容岛封顶 1400px，4K 上就是
+   "左边 400px 一小坨 + 中间 1400px 岛 + 两侧各 1300px 空白"。
+   这里让岛宽、左列、间距随视口放大并设上限，岛本身由 .player-page 的
+   justify-content:center 居中；1470×930 / 1000×700 完全不受影响（断点以下不命中）。 */
+@media (min-width: 2560px) {
+  .player-page-content {
+    max-width: min(2060px, 78vw);
+    padding: 96px 64px 56px;
+  }
+  .player-page-layout {
+    /* 左列随封面（≤680）增长，右列吃剩余；gap 从 64 涨到 200。
+       岛宽本身有 max-width 封顶并被 .player-page 的 justify-content:center 居中，
+       所以 4096 上不会退化成"左边一坨 + 右边一坨"的失衡构图。 */
+    grid-template-columns: minmax(440px, 680px) 1fr;
+    gap: clamp(64px, 5vw, 200px);
+  }
+  .player-page-left {
+    max-width: 700px;
+  }
+  /* 隐藏歌词的单列模式自带 max-width:440px；封面在超宽屏涨到 ≤680，
+     不一起放开的话封面会比标题/控制区还宽（实测 4096：封面 680 vs 文本 440）。 */
+  .player-page-layout--solo .player-page-left {
+    max-width: 700px;
+  }
+  /* 封面按视口高度等比放大（1470×930 基准 380 / 930 ≈ 41vh），封顶 680px。
+     选择器带 .player-page-left 是为了提高特异性：.album-art-zone / .album-art 的
+     380px 基础规则在本文件更靠后（:2133 / :2150），同特异性会把这里盖掉。 */
+  .player-page-left .album-art-zone,
+  .player-page-left .album-art {
+    width: min(680px, 46vh);
+    height: min(680px, 46vh);
+  }
+  /* 左列在行内垂直居中，歌词块（main 封顶 660px）也在列内居中，
+     避免"左列居中、歌词贴顶"的错位（改前 4096×2160：左列中心 y=1096，歌词中心 y=410）。 */
+  .lyric-stage--large {
+    justify-content: center;
+  }
 }
 
 @media (max-width: 1100px) {
@@ -2016,9 +2101,16 @@ button:active:not(:disabled):not(.no-press),
 @media (max-width: 900px) {
   .player-page-content {
     padding: 70px 20px 20px;
+    /* 单列堆叠后总高必然 > 视口（实测 780×438 下 70+624+24+360+20 = 1098 > 438），
+       不给内部滚动的话歌词列整块被 .player-page 的 overflow:hidden 裁在视口外，
+       "搜索歌词/微调"永远看不到。这里给内容区自己的滚动条，工具栏可达。 */
+    overflow-y: auto;
   }
   .player-page-layout {
     grid-template-columns: 1fr;
+    /* 行锁死（minmax(0,1fr)）只对两列并排有意义；单列堆叠必须两行都按内容排，
+       否则 1fr 行会被压成 0，左列内容直接叠到歌词列上（实测出现重叠）。 */
+    grid-template-rows: auto auto;
     gap: 24px;
   }
   .player-page-left {
@@ -2032,11 +2124,89 @@ button:active:not(:disabled):not(.no-press),
   }
 }
 
+/* ============ 矮窗档（视口高 ≤680px）============
+   问题：左列固有高度 624px（封面 380 + 曲名 73 + 进度 21 + 控制键 78 + 间距），
+   矮窗里它比可用高度还高，曲名/进度/5 个控制键整排掉到折叠线以下（实测 780×438
+   时控制键 y=604..682、search-trigger y=1024..1054，全在 438 视口外）。
+   修法：封面上限保留 380，但在矮窗档里允许它按剩余高度收缩（flex 收缩 + 1:1 宽高比），
+   曲名/进度/控制键一律 flex:0 0 auto 永不被压缩 —— 空间不足时只压缩封面。
+   1000×700 及以上不命中本断点（700 > 680），几何不变。 */
+@media (max-height: 680px), (max-width: 900px) {
+  .player-page-left .album-art-zone {
+    /* 覆盖 .player-page-left > * { flex-shrink: 0 }：只有封面参与收缩。
+       空间够时 flex 收缩不生效（1000×700 封面仍是 380），空间不足才让位给曲名/进度/控制键。 */
+    flex-shrink: 1;
+    min-height: 0;
+    /* 宽由高按 1:1 推出来（不加 max-width:100% 的宽度夹取，否则矮窗里宽高不再相等，
+       封面会被拉成 360×380）；列比封面窄时溢出的是留白，横向不会压到歌词列。 */
+    width: auto;
+    aspect-ratio: 1;
+  }
+  .player-page-left .album-art {
+    width: 100%;
+    height: 100%;
+  }
+}
+
+/* 又窄又矮：单列堆叠装不下 —— 438 视口只有 348px 可用高，
+   要放「封面 + 曲名 + 进度 + 5 个控制键」(最少 232px 固定开销 + 封面) 再接一整列歌词。
+   这里退回并排两列（与 ≥901px 同一套行锁死结构），封面继续按剩余高度收缩。
+   阈值 820：堆叠要 624(左列) + 24(gap) + 歌词行最少 90 ≈ 738 可用高 → 视口 ≥ 828 才成立。 */
+@media (max-width: 900px) and (max-height: 820px) {
+  .player-page-layout {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    gap: 20px;
+  }
+  .player-page-left {
+    max-width: 340px;
+    justify-self: end;
+  }
+  .player-page-right {
+    width: auto;
+    height: auto;
+    min-width: 0;
+    justify-self: stretch;
+  }
+  /* 控制行是 grid 1fr auto 1fr，min-content ≈ 448px（每侧两个 72px 按钮 + 24px 间隙/内距），
+     340px 的左列装不下 → 实测按钮横向溢到 x=-26..438，压到歌词列上。
+     矮窗更窄的档里把按钮内距/间隙从 24 收到 12：按钮 48×48（> --hit-min 28），
+     控制行 min-content ≈ 296px，放得下且点击区仍合规。 */
+  .player-page-left .big-control-btn {
+    padding: 12px;
+  }
+  .player-page-left .big-control-side {
+    gap: 12px;
+  }
+  .player-page-left .big-control-side--left {
+    padding-right: 12px;
+  }
+  .player-page-left .big-control-side--right {
+    padding-left: 12px;
+  }
+}
+
+/* 窄但够高（≥821）：保留单列堆叠，但两行不能都按 auto —— 624 + 24 + 360 = 1008
+   超过任何 ≤1100 的视口高，歌词行会整块掉到折叠线以下（实测 800×900：歌词列 y=718..1012）。
+   改成「左列 auto + 歌词行吃剩余」，歌词行内部再按既有 flex 链收缩。 */
+@media (max-width: 900px) and (min-height: 821px) {
+  .player-page-layout {
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  .player-page-right {
+    height: auto;
+    min-height: 0;
+  }
+}
+
 .back-btn {
   position: absolute;
+  /* 窗口拖动条(.drag-bar)固定在 0..--shell-dragbar-height 且层级 95 > 播放页 90，
+     top:30px 会让按钮上半截落进拖动区、点不到；这里下限取拖动条高度。 */
   top: 30px;
+  top: max(30px, var(--shell-dragbar-height));
   left: 30px;
-  z-index: 10; /* 浮在 .player-page-content 之上，避免被它遮挡 */
+  z-index: var(--z-page-float); /* 浮在 .player-page-content 之上，避免被它遮挡 */
   display: flex;
   align-items: center;
   gap: 8px;
@@ -2078,7 +2248,7 @@ button:active:not(:disabled):not(.no-press),
 .album-art-zone .album-art {
   margin-bottom: 0;
   position: relative;
-  z-index: 1;
+  z-index: var(--z-base);
 }
 
 .album-art {
@@ -2167,7 +2337,7 @@ button:active:not(:disabled):not(.no-press),
   position: absolute;
   inset: -40px;
   background: radial-gradient(circle, var(--accent-glow) 0%, transparent 70%);
-  z-index: 0;
+  z-index: var(--z-page-flat);
   opacity: 0;
   transition: opacity 0.5s ease-out 1.2s;
 }
@@ -2349,14 +2519,23 @@ button:active:not(:disabled):not(.no-press),
   background: rgba(0, 0, 0, 0.7);
   backdrop-filter: blur(10px);
   display: flex;
-  align-items: center;
+  /* 用自动外边距做垂直居中：弹窗比视口高时（1000×700）改为从顶部开始并滚动，
+     而不是 align-items:center 那样上下两端一起被裁掉 */
+  align-items: flex-start;
   justify-content: center;
-  z-index: 1000;
+  padding: var(--spacing-xl) var(--spacing-lg);
+  overflow-y: auto;
+  overflow-x: hidden;
+  z-index: var(--z-modal);
   animation: fadeIn 0.2s ease;
 }
 
+.modal-overlay > * {
+  margin-block: auto;
+}
+
 .modal-overlay--top {
-  z-index: 1100;
+  z-index: var(--z-modal-top);
 }
 
 .modal {
@@ -2596,7 +2775,7 @@ button:active:not(:disabled):not(.no-press),
   position: absolute;
   top: 8px;
   left: 8px;
-  z-index: 5;
+  z-index: var(--z-page-overlay);
   width: 22px;
   height: 22px;
   border-radius: 50%;
@@ -2777,7 +2956,7 @@ button:active:not(:disabled):not(.no-press),
   transform: translateY(-4px);
   transition: opacity var(--transition-fast), transform var(--transition-fast);
   pointer-events: auto;
-  z-index: 2;
+  z-index: var(--z-page-raised);
 }
 
 .card-tool-btn {
@@ -3302,10 +3481,7 @@ button:active:not(:disabled):not(.no-press),
   .main-content {
     padding: var(--spacing-lg) var(--spacing-xl);
   }
-  
-  .main-content::before {
-    left: 220px;
-  }
+
   
   .hero-section {
     padding: var(--spacing-2xl);
@@ -3341,10 +3517,7 @@ button:active:not(:disabled):not(.no-press),
   .main-content {
     padding: var(--spacing-md);
   }
-  
-  .main-content::before {
-    left: 0;
-  }
+
   
   .player-bar {
     height: var(--player-height-compact);
@@ -3996,13 +4169,13 @@ button:active:not(:disabled):not(.no-press),
   width: 20px;
   height: 20px;
   position: relative;
-  z-index: 1;
+  z-index: var(--z-base);
 }
 
 /* ==================== 桌面歌词开关按钮（底部播放栏） ==================== */
 .desktop-lyrics-btn .desktop-lyrics-char {
   position: relative;
-  z-index: 1;
+  z-index: var(--z-base);
   font-size: 14px;
   font-weight: 700;
   line-height: 1;
@@ -4024,7 +4197,7 @@ button:active:not(:disabled):not(.no-press),
   top: 6px;
   right: 6px;
   color: var(--primary-color, #ff5f9e);
-  z-index: 2;
+  z-index: var(--z-page-raised);
 }
 .desktop-lyrics-btn.locked::after {
   content: '';
@@ -4087,7 +4260,7 @@ button:active:not(:disabled):not(.no-press),
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 1000;
+  z-index: var(--z-modal);
   animation: fadeIn 0.3s ease;
 }
 
@@ -4352,7 +4525,7 @@ button:active:not(:disabled):not(.no-press),
   backdrop-filter: blur(30px);
   -webkit-backdrop-filter: blur(30px);
   border-left: 1px solid var(--glass-border);
-  z-index: 1000;
+  z-index: var(--z-modal);
   display: flex;
   flex-direction: column;
   animation: slideInRight 0.3s ease;
@@ -4795,6 +4968,31 @@ input:checked + .slider:before {
   transform: translateX(20px);
 }
 
+/* ==================== 浅色模式开关（switch） ==================== */
+/* 深色下"轨道 20% 白 + 滑块纯白"是柔和高亮；浅色背景本身接近纯白，
+   同样配色等于白底白钮，整颗开关看不见（用户截图里的"一坨白"）。
+   浅色改一套独立配色：深色中性轨道 + 白钮 + 1px 描边保证边界；
+   选中态沿用 var(--primary-color)，6 套主题色（含 apple-music）自动生效。
+   选择器全部以 [data-theme="light"] 开头，深色模式渲染逐像素不变。 */
+[data-theme="light"] .switch .slider {
+  background-color: rgba(0, 0, 0, 0.22);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.06);
+}
+
+[data-theme="light"] .switch .slider:before {
+  background-color: #ffffff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.14), 0 1px 2px rgba(0, 0, 0, 0.25);
+}
+
+[data-theme="light"] .switch input:checked + .slider {
+  background-color: var(--primary-color);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.08);
+}
+
+[data-theme="light"] .switch input:checked + .slider:before {
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
 /* ==================== 顶部状态栏 ==================== */
 .topbar {
   grid-area: topbar;
@@ -4802,7 +5000,7 @@ input:checked + .slider:before {
   align-items: center;
   justify-content: space-between;
   padding: 0 var(--spacing-2xl);
-  height: 64px;
+  height: var(--shell-topbar-height);
   background: var(--glass-bg);
   /* CSS 兜底用 8px 而非 var(--glass-blur) (24px)：
      LiquidGlass 接管后会改成 url(#xxx) blur(1.5px) ...，
@@ -4811,11 +5009,13 @@ input:checked + .slider:before {
   -webkit-backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--glass-border);
   position: relative;
-  z-index: var(--z-sticky);
+  z-index: var(--z-topbar);
   -webkit-app-region: drag;
 }
 
-.topbar > * { -webkit-app-region: no-drag; }
+/* 顶栏里的任何交互元素都必须 no-drag，否则 Electron 拖拽区会吃掉 click */
+.topbar > *,
+.topbar button { -webkit-app-region: no-drag; }
 
 .topbar-left {
   display: flex;
@@ -4887,20 +5087,14 @@ input:checked + .slider:before {
 }
 
 /* ==================== 底部 Dock 胶囊 ==================== */
-:root {
-  --dock-bottom: 50px;
-}
-
-[data-has-player] {
-  --dock-bottom: calc(var(--player-height) + 8px);
-}
-
+/* Dock 底边高度只认 --shell-dock-offset；.main-content 的底部预留由同一组 token 派生，
+   二者不会再各自漂移（旧写法：--dock-bottom 与 padding-bottom 手写两份魔法数） */
 .dock {
   position: fixed;
   left: 50%;
-  bottom: var(--dock-bottom);
+  bottom: var(--shell-dock-offset);
   transform: translateX(-50%);
-  z-index: calc(var(--z-modal) + 10);
+  z-index: var(--z-dock);
   pointer-events: none;
   animation: dockEnter 0.5s var(--transition-smooth) both;
   will-change: transform, opacity, bottom;
@@ -5851,9 +6045,11 @@ input:checked + .slider:before {
     "topbar topbar"
     "main main"
     "main main";
-  grid-template-rows: 38px 64px 1fr;
+  grid-template-rows: var(--shell-dragbar-height) var(--shell-topbar-height) 1fr;
   grid-template-columns: 1fr;
   height: 100vh;
+  /* 只保留 grid 行的 38px 拖动条，padding-top 会把顶栏再推下 38px */
+  padding: 0;
   background: var(--bg-primary);
   position: relative;
   overflow: hidden;
@@ -5863,22 +6059,25 @@ input:checked + .slider:before {
 
 .drag-bar { grid-area: dragbar; }
 .topbar { grid-area: topbar; }
-:root {
-  --main-content-padding-bottom: 120px;
-}
-
+/* 有播放栏时：Dock 抬高 + 内容底部预留同步抬高，两者都从 --player-height 派生，
+   任意一处改 --player-height 都会同时生效，不会再出现"注释式同步" */
 [data-has-player] {
-  --main-content-padding-bottom: calc(var(--player-height) + 100px);
+  --shell-player: var(--player-height);
+  --shell-dock-offset: calc(var(--player-height) + var(--dock-gap));
+  --shell-bottom-reserve: calc(var(--shell-player) + var(--dock-gap) + var(--dock-height) + var(--spacing-md));
 }
 
 .main-content {
   grid-area: main;
+  /* 让滚动容器在 grid 行内收缩：容器比行高时，底部预留会被顶出视口，最后一行被 Dock 盖住 */
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
   position: relative;
   z-index: var(--z-base);
   scroll-behavior: smooth;
-  padding: var(--spacing-2xl) var(--spacing-3xl) var(--main-content-padding-bottom);
+  /* 底部预留 = Dock 胶囊顶边 + 安全间距（唯一来源 --shell-bottom-reserve） */
+  padding: var(--spacing-2xl) var(--spacing-3xl) var(--shell-bottom-reserve);
   transition: padding-bottom 0.35s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
@@ -5890,13 +6089,160 @@ input:checked + .slider:before {
 /* 隐藏老 sidebar（保留以防兼容） */
 .app-container > .sidebar { display: none !important; }
 
+/* ==================== 页面区段约束（A2） ==================== */
+/* 覆盖 home / search / playlist / local / mine / player 六个页面与其页面级弹窗。
+   本区段的 z-index 只读 --z-page-* 与 --z-base（全部 ≤10），因此页面内部
+   永远压不住顶栏(--z-topbar:30) / Dock(--z-dock:70) / 弹窗(--z-modal:100)。 */
+
+/* --- 1) 页面级弹窗：永远完整落在视口内，页脚按钮区不被压缩 --- */
+/* 只给 .modal 本体加高度约束；A1 的 .modal-overlay（滚动/居中/层级）语义保持不变。
+   刻意不用 display:flex —— 改成 flex 会取消子元素外边距折叠（实测 create 弹窗
+   296px -> 312px），属于"修复之外的视觉改变"。只用 max-height + 内部滚动：
+   内容装得下时 overflow-y:auto 不产生任何像素变化，装不下时弹窗自身滚动，
+   而且因为没有 flex 收缩，页脚按钮区不会被压扁。 */
+.modal {
+  max-height: calc(100vh - 2 * var(--spacing-xl));
+  max-height: calc(100dvh - 2 * var(--spacing-xl));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* 注：这里刻意不给 .modal-buttons 加 position:sticky 吸底。实测内容真的溢出时，
+   吸底页脚会把滚到它下面的表单内容透出来（页脚没有自己的底色），比"滚一下就能看到
+   按钮"更难看；而现有页面级弹窗（创建/重命名/加入歌单/批量加入/歌单管理器/设置）
+   在 1000x700 下实测高度 296/296/523/555/228px，全部低于 652px 上限，不会触发溢出。
+   没有 display:flex 也就没有 flex 收缩，页脚高度天然不会被压扁。 */
+
+/* --- 2) 页面区段按钮基线：≥28×28 命中区，且禁止被 flex 压成 0 宽 --- */
+.search-box button,
+.play-button,
+.download-button,
+.p-add-btn,
+.playlist-action-btn,
+.playlist-card-checkbox,
+.close-btn,
+.btn-apply,
+.btn-reset,
+.modal-btn,
+.btn-secondary,
+.btn-danger,
+.btn-primary,
+.pagination-btn {
+  min-width: var(--hit-min);
+  min-height: var(--hit-min);
+  flex: 0 0 auto;
+}
+
+/* --- 3) 卡片/列表文字从源头省略，不依赖 .main-content 的 overflow-x 兜底 --- */
+.music-card,
+.playlist-card-item,
+.music-card-meta,
+.card-title,
+.card-artist,
+.playlist-card-name {
+  min-width: 0;
+}
+
+/* 弹窗内的歌单选择行（加入歌单 / 批量加入 / 多分P添加共用）
+   左列长名称：省略而不是换行把行撑高；
+   右侧「N 首」：不让 flex 压缩，否则会被挤成 "3" / "首" 两行。 */
+.playlist-modal-item > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.playlist-modal-item .playlist-count {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  margin-left: 12px;
+}
+
+/* --- 4) 播放页：标题/歌手长文本不得把控制区挤下去或被歌词区压住 --- */
+.track-info { min-width: 0; }
+.track-info h2,
+.track-info h3 {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ==================== 外壳通用约束（页面级可复用） ==================== */
+/* 命中区基线：任意按钮/图标按钮套上即可保证 ≥28×28，不会被容器压成不可点 */
+.hit-area {
+  min-width: var(--hit-min);
+  min-height: var(--hit-min);
+  flex: 0 0 auto;
+}
+
+/* 单行省略：flex 子项必须同时有 min-width:0，否则 text-overflow 不生效 */
+.ellipsis-1 {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 外壳按钮：命中区下限 + 不允许被 flex 压扁（压扁 = 视觉上"按钮被裁掉"） */
+.topbar-btn,
+.dock-item,
+.control-btn,
+.action-btn,
+.current-cover-btn {
+  min-width: var(--hit-min);
+  min-height: var(--hit-min);
+  flex: 0 0 auto;
+}
+
+/* 顶栏：品牌可省略，右侧按钮组永不被挤掉 */
+.topbar-left { min-width: 0; }
+.topbar-right { flex: 0 0 auto; }
+.brand {
+  max-width: 40vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dock-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ==================== 外壳断点：1470×930 与 1000×700 都必须完整 ==================== */
+@media (max-width: 1180px) {
+  .topbar { padding: 0 var(--spacing-xl); }
+  .main-content { padding-inline: var(--spacing-2xl); }
+  .dock-item { padding: 10px 12px; gap: 6px; }
+  .player-bar { padding: 0 var(--spacing-lg); gap: var(--spacing-lg); }
+  .current-track { width: 200px; }
+}
+
+@media (max-width: 1000px) {
+  .topbar { padding: 0 var(--spacing-lg); }
+  .main-content { padding-inline: var(--spacing-xl); }
+  /* 文字保留但限宽省略：按钮本身不消失、不换行、不被裁 */
+  .topbar-user span,
+  .topbar-login span { max-width: 72px; }
+  .dock-item { padding: 10px 10px; gap: 6px; font-size: var(--text-sm); }
+  .dock-label { max-width: 56px; }
+  .player-bar { padding: 0 var(--spacing-md); gap: var(--spacing-md); }
+  .current-track { width: 168px; }
+  .control-buttons { gap: var(--spacing-md); }
+  .player-actions { gap: 4px; }
+  .action-btn { padding: 6px; }
+}
+
 /* 响应式 */
 @media (max-width: 720px) {
   .topbar { padding: 0 var(--spacing-lg); }
   .topbar-user span, .topbar-login span { display: none; }
   .dock-label { display: none; }
   .dock-item { padding: 10px 12px; }
-  .main-content { padding: var(--spacing-lg) var(--spacing-md) var(--main-content-padding-bottom); }
+  .main-content { padding: var(--spacing-lg) var(--spacing-md) var(--shell-bottom-reserve); }
   .profile-card { flex-direction: column; text-align: center; }
   .profile-actions { justify-content: center; }
 }
@@ -6286,7 +6632,7 @@ input:checked + .slider:before {
 .player-page-cover-bg {
   position: absolute;
   inset: 0;
-  z-index: 0;
+  z-index: var(--z-page-flat);
   overflow: hidden;
   pointer-events: none;
   /* 强制硬件加速 + 滤镜性能提示 */

@@ -180,17 +180,26 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 1100;
+  /* 层级：A1 全局 token + 数值兜底 → 180，高于播放页(150)与 Dock(70)，
+     低于 WindowControls(--z-window-controls: 900) */
+  z-index: calc(var(--z-player-page, 150) + 30);
+  -webkit-app-region: no-drag;
 }
 .login-modal {
   width: 90%;
   max-width: 380px;
+  /* 与视口安全边距取小：窗口高度不足时整块不越界（1000×700 下为 602px） */
+  max-height: min(86vh, calc(100vh - 48px));
   background: var(--bg-primary);
   border-radius: var(--radius-lg);
   border: 1px solid var(--border-color);
   overflow: hidden;
+  /* 头部固定 + 内容区滚动，避免长内容把底部按钮顶出窗口 */
+  display: flex;
+  flex-direction: column;
 }
 .login-header {
+  flex: 0 0 auto;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -214,6 +223,10 @@ onBeforeUnmount(() => {
 }
 .close-btn:hover { color: var(--text-primary); }
 .login-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 22px 18px 24px;
   text-align: center;
 }
@@ -303,6 +316,17 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  /* 已登录态的按钮组是最后一个子节点：贴底常驻，
+     用户卡片 + 提示文案超长滚动时按钮仍在可视区内 */
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  background: var(--bg-primary);
+}
+
+/* 所有可点元素显式 no-drag */
+.login-modal button {
+  -webkit-app-region: no-drag;
 }
 .action-btn {
   padding: 10px 14px;

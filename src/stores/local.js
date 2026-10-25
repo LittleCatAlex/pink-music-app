@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { createPersistentStorage } from '@/utils/persistentStorage'
+import { toLocalUrl } from '@/utils/playUrlCache'
 import { usePlaylistStore, syncPlaylistCover } from './playlist'
 
 // 本地音乐库
@@ -29,6 +30,9 @@ export const useLocalStore = defineStore('local', {
     // 云端封面匹配：批量进行中的 UI 进度（{ active, current, total }）
     coverProgress: { active: false, current: 0, total: 0 },
     _coverCancel: false,
+    // 时长补全：标签里没有时长的文件用本地解码器重新读取（{ active, current, total }）
+    isFillingDurations: false,
+    durationProgress: { active: false, current: 0, total: 0 },
     _loaded: false
   }),
   getters: {
@@ -40,6 +44,25 @@ export const useLocalStore = defineStore('local', {
     },
     unplayableCount() {
       return this.tracks.filter(t => t.isUnplayable).length
+    },
+    /**
+     * 还缺时长的本地曲数量（库 + 歌单副本，按 id 去重）。
+     * 用于决定「补全时长」入口是否出现：只统计解码器拿得到的曲目
+     * （isUnplayable 的 wma/ape 等 Chromium 解不了，补了也是 0）。
+     */
+    zeroDurationCount() {
+      const ids = new Set()
+      for (const t of this.tracks) {
+        if (t && !t.duration && !t.isUnplayable) ids.add(t.id)
+      }
+      try {
+        for (const pl of usePlaylistStore().userPlaylists) {
+          for (const m of pl.music || []) {
+            if (m && m.source === 'local' && !m.duration && !m.isUnplayable) ids.add(m.id)
+          }
+        }
+      } catch (_) {}
+      return ids.size
     },
     /** 把本地库包装成"虚拟歌单"，供播放链路的 currentPlaylist 使用 */
     virtualPlaylist() {
@@ -185,54 +208,104 @@ export const useLocalStore = defineStore('local', {
       return _saveChain
     },
 
-    // ───────── 云端封面匹配（参考 HisAtri/LrcApi） ─────────
+    // ───────── 本地曲字段写回（封面 / 歌手 / 时长） ─────────
 
     /**
-     * 应用一张封面：写入本地库，并同步到所有引用该本地曲的歌单。
-     * 歌单里存的是曲目副本，所以必须两边一起改，否则歌单里还是旧封面。
+     * 统一写入口：把 patch 写进本地库曲目，并同步到歌单里的同名副本。
+     * 歌单里存的是曲目副本（不是引用），所以必须两边一起改，否则歌单里还是旧值。
+     * key 既可以是库内曲目 id，也可以只存在于歌单里的本地曲副本 id。
+     * 空值（undefined / null / ''）一律不写 —— 匹配失败不能被当成"没数据"清空字段。
+     * @returns {Promise<Object>} id → 本次实际写入的字段（没有变化时不出现该 id）
      */
-    async setTrackCover(id, coverUrl) {
-      if (!id || !coverUrl) return false
-      const t = this.tracks.find(x => x.id === id)
-      if (!t) return false
-      t.cover = coverUrl
-      await this.persist()
+    async applyTrackPatches(patches) {
+      const resolved = {}
+      for (const id of Object.keys(patches || {})) {
+        const patch = {}
+        for (const [k, v] of Object.entries(patches[id] || {})) {
+          if (v === undefined || v === null || v === '') continue
+          patch[k] = v
+        }
+        if (Object.keys(patch).length > 0) resolved[id] = patch
+      }
+      const ids = Object.keys(resolved)
+      if (ids.length === 0) return {}
 
-      // 同步到歌单里的同名副本
+      let libraryChanged = 0
+      for (const id of ids) {
+        const t = this.tracks.find(x => x.id === id)
+        if (!t) continue
+        const diff = {}
+        for (const [k, v] of Object.entries(resolved[id])) {
+          if (t[k] !== v) diff[k] = v
+        }
+        if (Object.keys(diff).length === 0) continue
+        Object.assign(t, diff)
+        libraryChanged++
+      }
+      if (libraryChanged > 0) await this.persist()
+      await this._syncTrackCopies(resolved)
+      return resolved
+    },
+
+    /** 把字段值同步到所有歌单里的本地曲副本（封面变化时顺带重算歌单封面） */
+    async _syncTrackCopies(patchById) {
       try {
         const playlistStore = usePlaylistStore()
         let touched = false
         for (const pl of playlistStore.userPlaylists) {
           if (!Array.isArray(pl.music)) continue
           let hit = false
+          let coverChanged = false
           for (const m of pl.music) {
-            if (m && m.source === 'local' && m.id === id) {
-              m.cover = coverUrl
+            if (!m || m.source !== 'local') continue
+            const patch = patchById[m.id]
+            if (!patch) continue
+            for (const [k, v] of Object.entries(patch)) {
+              if (m[k] === v) continue
+              m[k] = v
+              if (k === 'cover') coverChanged = true
               hit = true
             }
           }
-          if (hit) {
-            syncPlaylistCover(pl)
-            touched = true
-          }
+          if (!hit) continue
+          if (coverChanged) syncPlaylistCover(pl)
+          touched = true
         }
-        if (touched) {
-          await playlistStore.savePlaylists()
-          // 刷新当前查看歌单的引用，触发视图更新
-          const cur = playlistStore.currentPlaylist
-          if (cur && touched) {
-            const fresh = playlistStore.userPlaylists.find(p => p.id === cur.id)
-            if (fresh) playlistStore.setCurrentPlaylist(fresh)
-          }
+        if (!touched) return
+        await playlistStore.savePlaylists()
+        // 刷新当前查看歌单的引用，触发视图更新
+        const cur = playlistStore.currentPlaylist
+        if (cur) {
+          const fresh = playlistStore.userPlaylists.find(p => p.id === cur.id)
+          if (fresh) playlistStore.setCurrentPlaylist(fresh)
         }
       } catch (e) {
-        console.warn('[localStore] 同步歌单封面失败:', e?.message)
+        console.warn('[localStore] 同步歌单副本失败:', e?.message)
       }
+    },
+
+    /** 只改封面（兼容旧调用）：写入本地库 + 歌单副本 */
+    async setTrackCover(id, coverUrl) {
+      if (!id || !coverUrl) return false
+      if (!this.tracks.some(t => t.id === id)) return false
+      await this.applyTrackPatches({ [id]: { cover: coverUrl } })
       return true
     },
 
     /**
+     * 改一组字段（封面 / 歌手 / 时长…），本地库与歌单副本一起写。
+     * @returns {Promise<Object>} 本次实际写入的字段（{} 表示没有变化、未写盘）
+     */
+    async setTrackMeta(id, patch) {
+      if (!id || !patch) return {}
+      const applied = await this.applyTrackPatches({ [id]: patch })
+      return applied[id] || {}
+    },
+
+    /**
      * 自动匹配单首：按 歌名/歌手/专辑 走 LrcApi，成功后落盘并应用。
+     * 命中结果里的歌手名（matchedArtist）用它改写 author（用户诉求：
+     * 云同步封面成功后，歌手的名字直接采用封面来源的那个歌手名）。
      * @returns {Promise<string>} 成功返回协议 URL，失败返回 ''
      */
     async matchCoverFor(track) {
@@ -248,7 +321,11 @@ export const useLocalStore = defineStore('local', {
           album: track.album || ''
         })
         if (res?.code === 0 && res.data?.url) {
-          await this.setTrackCover(track.id, res.data.url)
+          const patch = { cover: res.data.url }
+          // 封面来源的歌手名更可信时一并改写（'未知作者' 占位允许被覆盖）
+          const matchedArtist = usableArtist(res.data.matchedArtist)
+          if (matchedArtist) patch.author = matchedArtist
+          await this.applyTrackPatches({ [track.id]: patch })
           return res.data.url
         }
       } catch (e) {
@@ -290,11 +367,108 @@ export const useLocalStore = defineStore('local', {
       this._coverCancel = true
     },
 
+    // ───────── 时长补全（标签读不出时长的格式靠本地解码器兜底） ─────────
+
+    /**
+     * 补全缺失时长：分片 MP4（bilibili/yt-dlp 下载的 m4a、mp4 常见）和裸 ADTS AAC
+     * 按容器规范根本没有时长字段，music-metadata 只能给出 0；播放器（<audio>）
+     * 解码后才知道真实时长，所以这里用同一个解码器重新读一遍再写回。
+     * 库内曲目与只存在于歌单里的副本都覆盖。
+     * @param {{ ids?: string[] }} [opts] 只补这批 id（导入后即时补全用）
+     * @returns {Promise<{ filled: number, total: number }>}
+     */
+    async fillMissingDurations({ ids } = {}) {
+      const only = Array.isArray(ids) && ids.length > 0 ? new Set(ids) : null
+      const targets = new Map()
+      const consider = (m) => {
+        if (!m || m.source !== 'local') return
+        if (only && !only.has(m.id)) return
+        if (!m.id || !m.filePath || m.duration || m.isUnplayable) return
+        if (!targets.has(m.id)) targets.set(m.id, m)
+      }
+      for (const t of this.tracks) consider(t)
+      try {
+        const playlistStore = usePlaylistStore()
+        for (const pl of playlistStore.userPlaylists) {
+          for (const m of pl.music || []) consider(m)
+        }
+      } catch (_) {}
+
+      const list = Array.from(targets.values())
+      if (list.length === 0) return { filled: 0, total: 0 }
+
+      this.isFillingDurations = true
+      this.durationProgress = { active: true, current: 0, total: list.length }
+      const patches = {}
+      try {
+        for (let i = 0; i < list.length; i++) {
+          const seconds = await probeLocalDuration(list[i].filePath)
+          if (seconds > 0) patches[list[i].id] = { duration: seconds }
+          this.durationProgress = { active: true, current: i + 1, total: list.length }
+        }
+        if (Object.keys(patches).length > 0) await this.applyTrackPatches(patches)
+      } finally {
+        this.isFillingDurations = false
+        this.durationProgress = { active: false, current: 0, total: 0 }
+      }
+      return { filled: Object.keys(patches).length, total: list.length }
+    },
+
     async flush(timeoutMs = 2000) {
       try { await this.persist() } catch (_) {}
     }
   }
 })
+
+// 时长探测超时：分片 MP4 要读到文件尾部才知道时长，给足时间但必须能放弃
+const DURATION_PROBE_TIMEOUT_MS = 15000
+
+/**
+ * 候选/匹配结果里的歌手名是否可用。
+ * 空值或占位名一律当作"没有数据"，绝不拿它去覆盖本地已有的歌手。
+ */
+function usableArtist(value) {
+  const name = String(value || '').trim()
+  if (!name) return ''
+  if (name === '未知作者' || name === '未知歌手' || name.toLowerCase() === 'unknown') return ''
+  return name
+}
+
+/**
+ * 用播放器同款解码器（<audio>）读真实时长，返回整秒数；读不出返回 0。
+ * 只请求 metadata，拿到时长立刻断开，避免把大文件整个拉下来后继续占资源。
+ */
+function probeLocalDuration(filePath) {
+  return new Promise((resolve) => {
+    const url = toLocalUrl(filePath)
+    if (!url || typeof Audio === 'undefined') return resolve(0)
+    let el = null
+    let timer = null
+    let settled = false
+    const finish = (seconds) => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      if (el) {
+        try { el.removeAttribute('src'); el.load() } catch (_) {}
+      }
+      resolve(seconds)
+    }
+    timer = setTimeout(() => finish(0), DURATION_PROBE_TIMEOUT_MS)
+    try {
+      el = new Audio()
+      el.preload = 'metadata'
+      el.addEventListener('loadedmetadata', () => {
+        const d = el.duration
+        finish(Number.isFinite(d) && d > 0 ? Math.round(d) : 0)
+      })
+      el.addEventListener('error', () => finish(0))
+      el.src = url
+    } catch (_) {
+      finish(0)
+    }
+  })
+}
 
 /** 规范化一条本地曲目，保证 source/id/关键字段齐全 */
 function normalizeLocalTrack(t) {

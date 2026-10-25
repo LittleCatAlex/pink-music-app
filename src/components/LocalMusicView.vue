@@ -142,6 +142,11 @@ async function runImport(filePaths, { createPlaylistName = '' } = {}) {
       } else {
         alert(`导入完成：新增 ${added} 首${skipped ? `，已存在 ${skipped} 首` : ''}`)
       }
+      // 标签里读不出时长的格式（分片 MP4 / 裸 ADTS AAC 等）用解码器补全，后台执行
+      const needDuration = tracks.filter(t => !t.duration && !t.isUnplayable).map(t => t.id)
+      if (needDuration.length > 0) {
+        localStore.fillMissingDurations({ ids: needDuration }).catch(() => {})
+      }
       // 导入后自动匹配缺失封面（后台执行，不阻塞）
       if (settingsStore.localAutoFetchCover) {
         localStore.batchMatchCovers().catch(() => {})
@@ -362,11 +367,21 @@ async function applyCover(candidate) {
   coverError.value = ''
   coverNotice.value = ''
   try {
-    const res = await window.electronAPI?.local?.applyCover({ url: raw, provider: candidate.provider })
+    const res = await window.electronAPI?.local?.applyCover({
+      url: raw,
+      provider: candidate.provider,
+      artist: candidate.artist || '',
+      name: candidate.name || ''
+    })
     if (res?.code === 0 && res.data?.url) {
-      await localStore.setTrackCover(t.id, res.data.url)
+      // 候选自带歌手时一并写入（空值不会覆盖已有歌手，见 store 的 applyTrackPatches）
+      // 主进程回传优先，回传缺失时退回候选自身字段，兼容只回 url 的旧主进程
+      const applied = await localStore.setTrackMeta(t.id, {
+        cover: res.data.url,
+        author: res.data.artist || candidate.artist
+      })
       // 不关闭面板：用户可继续挑选更合适的封面
-      coverNotice.value = `已应用「${candidate.name || '所选封面'}」`
+      coverNotice.value = `已应用「${candidate.name || '所选封面'}」${applied.author ? `，歌手更新为「${applied.author}」` : ''}`
     } else {
       coverError.value = res?.message || '应用封面失败'
     }
@@ -390,6 +405,18 @@ function onCoverKeydown(e) {
     const item = coverResults.value[coverSelectedIndex.value]
     if (item) { e.preventDefault(); applyCover(item) }
   }
+}
+
+/** 补全缺失时长：标签里没有时长的文件用本地解码器重新读取 */
+async function fixDurations() {
+  if (localStore.isFillingDurations) return
+  const { filled, total } = await localStore.fillMissingDurations()
+  const left = localStore.zeroDurationCount
+  if (filled === 0) {
+    alert(`这 ${total} 首曲目读不出时长（解码器无法播放该格式），已保持原样`)
+    return
+  }
+  alert(`已补全 ${filled} 首曲目的时长${left > 0 ? `，另有 ${left} 首仍读不出时长` : ''}`)
 }
 
 /** 批量匹配所有缺失封面 */
@@ -450,6 +477,16 @@ async function batchMatchCovers() {
             <span>{{ localStore.isCheckingMissing ? '检测中…' : '检测失效' }}</span>
           </button>
           <button
+            v-if="localStore.zeroDurationCount > 0 || localStore.isFillingDurations"
+            class="playlist-action-btn"
+            :disabled="localStore.isFillingDurations"
+            @click="fixDurations"
+            title="标签里没有时长的文件（分片 MP4 / AAC 等）用本地解码器重新读取真实时长"
+          >
+            <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm1 11H7.5v-2H11V6h2v7z"/></svg>
+            <span>{{ localStore.isFillingDurations ? `读取时长 ${localStore.durationProgress.current}/${localStore.durationProgress.total}` : `补全时长 (${localStore.zeroDurationCount})` }}</span>
+          </button>
+          <button
             v-if="localStore.coverProgress.active"
             class="playlist-action-btn danger"
             @click="localStore.cancelBatchCovers()"
@@ -498,6 +535,17 @@ async function batchMatchCovers() {
         ></div>
       </div>
       <span>正在匹配云端封面 {{ localStore.coverProgress.current }} / {{ localStore.coverProgress.total }}</span>
+    </div>
+
+    <!-- 时长补全进度 -->
+    <div v-if="localStore.isFillingDurations" class="local-progress">
+      <div class="local-progress-bar">
+        <div
+          class="local-progress-fill"
+          :style="{ width: (localStore.durationProgress.total ? Math.round(localStore.durationProgress.current / localStore.durationProgress.total * 100) : 5) + '%' }"
+        ></div>
+      </div>
+      <span>正在读取时长 {{ localStore.durationProgress.current }} / {{ localStore.durationProgress.total }}</span>
     </div>
 
     <!-- 过滤 / 排序 -->
@@ -605,77 +653,81 @@ async function batchMatchCovers() {
     </div>
 
     <!-- 云端封面匹配面板（交互对齐歌词搜索面板） -->
-    <div v-if="showCoverPanel" class="modal-overlay" @click.self="closeCoverPanel">
-      <div class="modal cover-panel" @click.stop>
-        <h2>匹配云端封面</h2>
-        <p class="cover-panel-subtitle">
-          当前曲目：{{ coverTarget?.title || '未知标题' }}<template v-if="coverTarget?.author && coverTarget.author !== '未知作者'"> · {{ coverTarget.author }}</template>
-        </p>
+    <!-- Teleport 到 body：页面级弹窗若留在 .main-content（z-index:var(--z-base)）内，
+         会被困在 z=1 层，Dock/播放页会压住弹窗与页脚按钮。 -->
+    <Teleport to="body">
+      <div v-if="showCoverPanel" class="modal-overlay" @click.self="closeCoverPanel">
+        <div class="modal cover-panel" @click.stop>
+          <h2>匹配云端封面</h2>
+          <p class="cover-panel-subtitle">
+            当前曲目：{{ coverTarget?.title || '未知标题' }}<template v-if="coverTarget?.author && coverTarget.author !== '未知作者'"> · {{ coverTarget.author }}</template>
+          </p>
 
-        <!-- 当前封面预览：应用新封面后立即在这里反映 -->
-        <div class="cover-current">
-          <img v-if="coverPreviewUrl" :src="coverPreviewUrl" class="cover-current-img" alt="" />
-          <div v-else class="cover-current-img cover-thumb--empty"></div>
-          <div class="cover-current-text">
-            <span class="cover-current-label">{{ coverPreviewUrl ? '当前封面' : '暂无封面' }}</span>
-            <span class="cover-current-hint">选择下方任一结果即可替换</span>
-          </div>
-        </div>
-
-        <div class="cover-panel-row">
-          <input
-            ref="coverInputRef"
-            v-model="coverKeyword"
-            type="text"
-            class="cover-search-input"
-            placeholder="输入歌名 / 歌手 搜索封面"
-            @keydown="onCoverKeydown"
-          />
-          <button class="btn-secondary" :disabled="isCoverSearching" @click="handleCoverSearch">
-            {{ isCoverSearching ? '搜索中…' : '搜索' }}
-          </button>
-          <button class="btn-primary" :disabled="isCoverMatching" @click="autoMatchCover">
-            {{ isCoverMatching ? '匹配中…' : '自动匹配' }}
-          </button>
-        </div>
-
-        <p v-if="coverNotice" class="cover-notice">{{ coverNotice }}</p>
-
-        <div v-if="isCoverMatching" class="cover-panel-loading">
-          <div class="loading-spinner"></div>
-          <p>正在按歌名/歌手自动匹配…</p>
-        </div>
-
-        <div v-else class="cover-result-list">
-          <div
-            v-for="(song, i) in coverResults"
-            :key="song.id"
-            class="cover-result-item"
-            :class="{ active: coverSelectedIndex === i }"
-            @click="applyCover(song)"
-            @mouseenter="coverSelectedIndex = i"
-          >
-            <img v-if="song.cover" :src="song.cover" class="cover-thumb" alt="" loading="lazy" decoding="async" />
-            <div v-else class="cover-thumb cover-thumb--empty"></div>
-            <div class="cover-result-text">
-              <span class="cover-result-name">{{ song.name }}</span>
-              <span class="cover-result-meta">{{ song.artist }}<template v-if="song.album"> · {{ song.album }}</template></span>
+          <!-- 当前封面预览：应用新封面后立即在这里反映 -->
+          <div class="cover-current">
+            <img v-if="coverPreviewUrl" :src="coverPreviewUrl" class="cover-current-img" alt="" />
+            <div v-else class="cover-current-img cover-thumb--empty"></div>
+            <div class="cover-current-text">
+              <span class="cover-current-label">{{ coverPreviewUrl ? '当前封面' : '暂无封面' }}</span>
+              <span class="cover-current-hint">选择下方任一结果即可替换</span>
             </div>
-            <span class="cover-result-apply">{{ applyingCoverId === song.id ? '应用中…' : '使用' }}</span>
           </div>
-          <div v-if="!isCoverSearching && !coverError && coverResults.length === 0" class="cover-panel-empty">
-            <p>输入关键词点「搜索」选封面；有歌手信息时也可直接点「自动匹配」</p>
-          </div>
-          <div v-if="coverError" class="cover-panel-empty">
-            <p class="cover-error">{{ coverError }}</p>
-          </div>
-        </div>
 
-        <div class="modal-buttons">
-          <button class="modal-btn confirm" @click="closeCoverPanel">完成</button>
+          <div class="cover-panel-row">
+            <input
+              ref="coverInputRef"
+              v-model="coverKeyword"
+              type="text"
+              class="cover-search-input"
+              placeholder="输入歌名 / 歌手 搜索封面"
+              @keydown="onCoverKeydown"
+            />
+            <button class="btn-secondary" :disabled="isCoverSearching" @click="handleCoverSearch">
+              {{ isCoverSearching ? '搜索中…' : '搜索' }}
+            </button>
+            <button class="btn-primary" :disabled="isCoverMatching" @click="autoMatchCover">
+              {{ isCoverMatching ? '匹配中…' : '自动匹配' }}
+            </button>
+          </div>
+
+          <p v-if="coverNotice" class="cover-notice">{{ coverNotice }}</p>
+
+          <div v-if="isCoverMatching" class="cover-panel-loading">
+            <div class="loading-spinner"></div>
+            <p>正在按歌名/歌手自动匹配…</p>
+          </div>
+
+          <div v-else class="cover-result-list">
+            <div
+              v-for="(song, i) in coverResults"
+              :key="song.id"
+              class="cover-result-item"
+              :class="{ active: coverSelectedIndex === i }"
+              @click="applyCover(song)"
+              @mouseenter="coverSelectedIndex = i"
+            >
+              <img v-if="song.cover" :src="song.cover" class="cover-thumb" alt="" loading="lazy" decoding="async" />
+              <div v-else class="cover-thumb cover-thumb--empty"></div>
+              <div class="cover-result-text">
+                <span class="cover-result-name">{{ song.name }}</span>
+                <span class="cover-result-meta">{{ song.artist }}<template v-if="song.album"> · {{ song.album }}</template></span>
+              </div>
+              <span class="cover-result-apply">{{ applyingCoverId === song.id ? '应用中…' : '使用' }}</span>
+            </div>
+            <div v-if="!isCoverSearching && !coverError && coverResults.length === 0" class="cover-panel-empty">
+              <p>输入关键词点「搜索」选封面；有歌手信息时也可直接点「自动匹配」</p>
+            </div>
+            <div v-if="coverError" class="cover-panel-empty">
+              <p class="cover-error">{{ coverError }}</p>
+            </div>
+          </div>
+
+          <div class="modal-buttons">
+            <button class="modal-btn confirm" @click="closeCoverPanel">完成</button>
+          </div>
         </div>
       </div>
-    </div>
+    </Teleport>
   </section>
 </template>
 

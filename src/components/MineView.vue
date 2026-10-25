@@ -837,6 +837,24 @@ function handleOpenSettings() {
           </div>
         </div>
 
+        <!-- 默认歌词源：优先使用该源，取词失败时自动回退到另一个源（不是"唯一来源"） -->
+        <div class="setting-item">
+          <div class="setting-label-with-hint">
+            <label>默认歌词源</label>
+            <span class="setting-hint">优先从该源取词，失败时自动回退到另一个源；已缓存的歌词与进度偏移不受影响</span>
+          </div>
+          <div class="setting-value">
+            <select
+              v-model="settingsStore.lyricPreferredSource"
+              @change="settingsStore.setLyricPreferredSource(settingsStore.lyricPreferredSource)"
+              class="quality-select"
+            >
+              <option value="kugou">酷狗（KRC，默认）</option>
+              <option value="netease">网易云</option>
+            </select>
+          </div>
+        </div>
+
         <!-- 桌面歌词全局快捷键 -->
         <div class="setting-item">
           <div class="setting-label-with-hint">
@@ -857,6 +875,24 @@ function handleOpenSettings() {
               <kbd class="hotkey-display is-recording">{{ hotkeyPreview || '按下新组合…' }}</kbd>
               <span class="hotkey-tip">Esc 取消{{ hotkeyNeedModifier ? ' · 需要至少一个修饰键' : '' }}</span>
             </template>
+          </div>
+        </div>
+
+        <!-- 高对比模式：浅色壁纸/浅色主题下歌词窗改用白字描边，避免歌词发虚 -->
+        <div class="setting-item">
+          <div class="setting-label-with-hint">
+            <label>高对比模式</label>
+            <span class="setting-hint">浅色壁纸/浅色主题下改用白字描边，避免歌词发虚</span>
+          </div>
+          <div class="setting-value">
+            <label class="switch" :title="settingsStore.desktopLyricsHighContrast ? '关闭高对比（恢复跟随主题的配色）' : '开启高对比（白字描边）'">
+              <input
+                type="checkbox"
+                :checked="settingsStore.desktopLyricsHighContrast"
+                @change="settingsStore.setDesktopLyricsHighContrast($event.target.checked)"
+              >
+              <span class="slider"></span>
+            </label>
           </div>
         </div>
         <p v-if="hotkeyConflict" class="setting-hint hotkey-error">该快捷键可能已被其他应用占用，已保留原快捷键，请换一个组合。</p>
@@ -1005,31 +1041,37 @@ function handleOpenSettings() {
     </Transition>
 
     <!-- 清理缓存确认 -->
-    <div v-if="showClearCacheConfirm" class="modal-overlay" @click="showClearCacheConfirm = false">
-      <div class="modal small-modal" @click.stop>
-        <h2>确认清理缓存</h2>
-        <p>清理缓存将删除已缓存的音频、应用临时文件与网络缓存，<b>不会影响你的下载文件</b>，此操作不可恢复。</p>
-        <div class="modal-buttons">
-          <button class="btn-secondary" @click="showClearCacheConfirm = false">取消</button>
-          <button class="btn-danger" @click="clearCache">确认清理</button>
+    <!-- Teleport 到 body：.main-content 是 position:relative + z-index:var(--z-base) 的层叠上下文，
+         弹窗留在页面内部会被困在 z=1 这一层，Dock(--z-dock:70) 会压在弹窗与页脚按钮之上。 -->
+    <Teleport to="body">
+      <div v-if="showClearCacheConfirm" class="modal-overlay" @click="showClearCacheConfirm = false">
+        <div class="modal small-modal" @click.stop>
+          <h2>确认清理缓存</h2>
+          <p>清理缓存将删除已缓存的音频、应用临时文件与网络缓存，<b>不会影响你的下载文件</b>，此操作不可恢复。</p>
+          <div class="modal-buttons">
+            <button class="btn-secondary" @click="showClearCacheConfirm = false">取消</button>
+            <button class="btn-danger" @click="clearCache">确认清理</button>
+          </div>
         </div>
       </div>
-    </div>
+    </Teleport>
 
     <!-- 新版本发行说明 -->
-    <div v-if="showUpdateModal" class="modal-overlay" @click="showUpdateModal = false">
-      <div class="modal update-modal" @click.stop>
-        <h2>发现新版本 v{{ updateStore.latestVersion }}</h2>
-        <p class="update-modal-meta">
-          <span>当前版本 v{{ updateStore.currentVersion }}</span>
-          <span v-if="formatPublishedAt(updateStore.publishedAt)">发布于 {{ formatPublishedAt(updateStore.publishedAt) }}</span>
-        </p>
-        <div class="release-notes" v-html="updateStore.notesHtml"></div>
-        <div class="modal-buttons">
-          <button class="btn-secondary" @click="showUpdateModal = false">稍后</button>
-          <button class="btn-primary" @click="openReleasePage">前往下载</button>
+    <Teleport to="body">
+      <div v-if="showUpdateModal" class="modal-overlay" @click="showUpdateModal = false">
+        <div class="modal update-modal" @click.stop>
+          <h2>发现新版本 v{{ updateStore.latestVersion }}</h2>
+          <p class="update-modal-meta">
+            <span>当前版本 v{{ updateStore.currentVersion }}</span>
+            <span v-if="formatPublishedAt(updateStore.publishedAt)">发布于 {{ formatPublishedAt(updateStore.publishedAt) }}</span>
+          </p>
+          <div class="release-notes" v-html="updateStore.notesHtml"></div>
+          <div class="modal-buttons">
+            <button class="btn-secondary" @click="showUpdateModal = false">稍后</button>
+            <button class="btn-primary" @click="openReleasePage">前往下载</button>
+          </div>
         </div>
       </div>
-    </div>
+    </Teleport>
   </section>
 </template>

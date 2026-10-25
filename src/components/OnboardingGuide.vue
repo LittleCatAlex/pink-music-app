@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useSettingsStore, useThemeStore } from '../stores'
 import pinkLogo from '../../pink.png'
 
@@ -11,6 +11,12 @@ const visible = computed(() => !settingsStore.onboardingCompleted)
 
 const TOTAL_STEPS = 8
 const step = ref(0)
+const bodyRef = ref(null)
+
+// 切步后把滚动区复位到顶部：上一步滚到底再翻页，下一步不应从中间开始
+watch(step, () => nextTick(() => {
+  if (bodyRef.value) bodyRef.value.scrollTop = 0
+}))
 
 // 桌面歌词快捷键展示文案（跟随设置项，按平台转写）
 const isMac = /Mac|iPhone|iPad/.test(navigator.platform || '')
@@ -77,6 +83,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeyDown))
           跳过引导
         </button>
 
+        <!-- 内容滚动区：卡片本身不滚动，底部「上一步/下一步」常驻可见 -->
+        <div ref="bodyRef" class="ob-body">
         <Transition name="ob-slide" mode="out-in">
           <!-- 步骤 0：欢迎 -->
           <div v-if="step === 0" key="s0" class="ob-step ob-step-welcome">
@@ -334,6 +342,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeyDown))
             <p class="ob-hint">祝你听歌愉快 🎵</p>
           </div>
         </Transition>
+        </div>
 
         <!-- 底部：进度点 + 导航 -->
         <div class="ob-footer">
@@ -363,7 +372,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeyDown))
 .onboarding-overlay {
   position: fixed;
   inset: 0;
-  z-index: 2000;
+  /* 层级：挂在 A1 全局 token 上（兜底 150 = --z-player-page）→ 190，
+     高于播放页(150)与 Dock(70)，低于 toast(200) 与 WindowControls(900) */
+  z-index: calc(var(--z-player-page, 150) + 40);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -371,13 +382,19 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeyDown))
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   padding: 24px;
+  /* 遮罩不是拖拽区：否则 Electron 会吞掉盖在其上的按钮 click */
+  -webkit-app-region: no-drag;
 }
 
 .onboarding-card {
   position: relative;
   width: min(520px, 92vw);
-  max-height: 86vh;
-  overflow-y: auto;
+  /* 与「视口安全边距」取小值：1000×700 时 86vh=602 已生效，
+     窗口再矮时由 calc(100vh - 48px) 兜底，卡片永远不会被窗口边缘裁掉 */
+  max-height: min(86vh, calc(100vh - 48px));
+  /* 卡片自身不滚动（旧写法 overflow-y:auto 会把 .ob-footer 一起滚出可视区，
+     导致「下一步」看不见也点不到）；滚动交给内部 .ob-body */
+  overflow: hidden;
   padding: 40px 36px 28px;
   border-radius: 24px;
   background: var(--bg-card);
@@ -387,6 +404,15 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeyDown))
   -webkit-backdrop-filter: blur(var(--glass-blur-heavy));
   display: flex;
   flex-direction: column;
+}
+
+/* 内容滚动区：仅这里滚动，头部与底部导航固定 */
+.ob-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
 }
 
 /* 跳过 */
@@ -652,12 +678,24 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeyDown))
 
 /* 底部导航 */
 .ob-footer {
+  /* 不允许被上方内容压缩：任何窗口高度下按钮区都保持完整高度 */
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
   margin-top: 8px;
   padding-top: 18px;
   border-top: 1px solid var(--glass-border);
+}
+
+/* 所有可点元素显式 no-drag（引导页可能盖在拖拽区之上） */
+.ob-skip,
+.ob-btn,
+.ob-dot,
+.ob-mode-switch button,
+.ob-color-dot,
+.ob-toggle {
+  -webkit-app-region: no-drag;
 }
 .ob-dots {
   display: flex;

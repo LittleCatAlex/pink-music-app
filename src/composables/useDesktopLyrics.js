@@ -1,6 +1,7 @@
 import { ref, computed, watch, onUnmounted } from 'vue'
 import { usePlayerStore, useLyricStore, useSettingsStore, useThemeStore } from '@/stores'
 import { getAudioEl } from '../utils/audioEngine.js'
+import { toHotkeyLabel } from '../utils/hotkeyLabel.js'
 
 /**
  * 桌面歌词（悬浮窗）主窗口侧桥接。
@@ -8,7 +9,7 @@ import { getAudioEl } from '../utils/audioEngine.js'
  * 职责：
  * 1. 把播放状态以 ~250ms 节流快照推给歌词窗口（歌词窗本地 rAF 插值，丝滑滚动）
  * 2. 切歌/歌词加载/偏移量变化时推送整份解析后的歌词行
- * 3. 锁定态/显示模式/当前主题色变化时推送样式（字号配色固定，颜色自动跟随主题）
+ * 3. 锁定态/显示模式/高对比/当前主题色/快捷键文案变化时推送样式（字号配色固定，颜色自动跟随主题）
  * 4. 接收歌词窗回传命令：seek / lock / close / ready 握手
  * 5. 开关窗口并维护 dlEnabled 状态
  *
@@ -113,7 +114,11 @@ export function useDesktopLyrics({ onSeek } = {}) {
       type: 'style',
       locked: !!settingsStore.desktopLyricsLocked,
       displayMode: settingsStore.lyricDisplayMode,   // original | romaji | translation，与大屏播放页一致
-      ...readThemeColors()                           // 歌词颜色自动跟随当前主题
+      ...readThemeColors(),                          // 歌词颜色自动跟随当前主题
+      // 高对比模式：歌词窗根节点据此加 .is-hc（白字描边），只影响歌词窗
+      highContrast: !!settingsStore.desktopLyricsHighContrast,
+      // 全局快捷键文案（macOS ⌘D / Windows Ctrl+D）：歌词窗提示用，随设置页录制结果变化
+      hotkeyLabel: toHotkeyLabel(settingsStore.desktopLyricsHotkey)
     })
   }
 
@@ -205,6 +210,8 @@ export function useDesktopLyrics({ onSeek } = {}) {
   watches.push(watch(() => lyricStore.currentOffset, () => pushLyrics()))
   watches.push(watch(() => settingsStore.desktopLyricsLocked, () => pushStyle()))
   watches.push(watch(() => settingsStore.lyricDisplayMode, () => pushStyle()))
+  watches.push(watch(() => settingsStore.desktopLyricsHighContrast, () => pushStyle()))
+  watches.push(watch(() => settingsStore.desktopLyricsHotkey, () => pushStyle()))
   // 主题（深浅色 / 主题色）变化时同步歌词窗配色；flush:'post' 确保 DOM 属性已应用后再读 computed style
   watches.push(watch(
     () => [themeStore.currentTheme, themeStore.currentColor],

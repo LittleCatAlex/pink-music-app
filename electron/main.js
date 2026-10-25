@@ -5,6 +5,8 @@ const os = require('os');
 const axios = require('axios');
 const crypto = require('crypto');
 const { searchKugou, getKugouLyric } = require('./lyricSources');
+const { resolveLyricSourceOrder } = require('./lyricSourceOrder');
+const { resolveLyricsWindowPosition } = require('./lyricsWindowBounds');
 
 // 显式固定 userData 目录，使开发版（npm run electron:dev）和
 // 打包版（electron-builder）走同一个目录，B 站登录 cookie 互通、长期保持登录态。
@@ -701,23 +703,34 @@ function getLyricsWindow() {
   return null
 }
 
-/** 读取上次保存的窗口位置；带多显示器防御（至少 1/3 高度落在某块屏幕内才恢复） */
+/**
+ * 读取上次保存的窗口位置，并做多显示器兜底（逻辑在 lyricsWindowBounds.js，可单测）：
+ * 副屏被拔（位置与所有 workArea 都不相交）→ 回退主屏居中；
+ * 仅部分越界 → 夹回重叠最多的那块屏幕。尺寸同时抬到布局硬下限。
+ */
 function readLyricsBounds() {
   try {
     const file = DESKTOP_LYRICS_BOUNDS_FILE();
-    if (!fs.existsSync(file)) return null;
-    const data = JSON.parse(fs.readFileSync(file, 'utf-8'));
-    if (!data || typeof data.x !== 'number' || typeof data.y !== 'number' ||
-        typeof data.width !== 'number' || typeof data.height !== 'number') return null;
-    const displays = screen.getAllDisplays();
-    const inside = displays.some(d => {
-      const { x, y, width, height } = d.workArea;
-      return data.x + data.width > x && data.x < x + width &&
-             data.y + data.height / 3 > y && data.y < y + height;
+    let saved = null;
+    if (fs.existsSync(file)) {
+      const data = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      if (data && typeof data.x === 'number' && typeof data.y === 'number' &&
+          typeof data.width === 'number' && typeof data.height === 'number') saved = data;
+    }
+    // 历史 bounds 里可能存了小于布局硬下限（约 186×40）的尺寸：minWidth/minHeight 只约束
+    // 之后的交互缩放，管不到已经落盘的脏数据，所以读取时先抬到 300×60。
+    const width = Math.max(300, (saved && saved.width) || DESKTOP_LYRICS_DEFAULT_WIDTH);
+    const height = Math.max(60, (saved && saved.height) || DESKTOP_LYRICS_DEFAULT_HEIGHT);
+    const { x, y } = resolveLyricsWindowPosition({
+      saved,
+      displays: screen.getAllDisplays(),
+      primary: screen.getPrimaryDisplay(),
+      width,
+      height
     });
-    return inside ? data : null;
+    return { x, y, width, height };
   } catch (_) {
-    return null;
+    return null;   // 文件损坏 / 屏幕查询异常：交给 Electron 默认居中，不阻塞开窗
   }
 }
 
@@ -728,8 +741,9 @@ function readLyricsBounds() {
 function createLyricsWindow() {
   const saved = readLyricsBounds();
   lyricsWindow = new BrowserWindow({
-    width: saved?.width || DESKTOP_LYRICS_DEFAULT_WIDTH,
-    height: saved?.height || DESKTOP_LYRICS_DEFAULT_HEIGHT,
+    // 尺寸已在 readLyricsBounds 抬到下限（300×60），这里再 clamp 一次兜住 readLyricsBounds 返回 null 的路径
+    width: Math.max(300, saved?.width || DESKTOP_LYRICS_DEFAULT_WIDTH),
+    height: Math.max(60, saved?.height || DESKTOP_LYRICS_DEFAULT_HEIGHT),
     minWidth: 300,
     minHeight: 60,
     x: saved?.x,
@@ -1063,10 +1077,121 @@ function installWebRequestInterceptors(targetSession) {
 // 便于多项目并行开发时错开端口
 const DEV_SERVER_ORIGIN = `http://localhost:${process.env.VITE_DEV_PORT || 5173}`;
 
+// ── 主窗口尺寸约束（随屏幕可用工作区动态计算） ──────────────────
+// 1000×700 是主界面（顶栏 + 内容区 + 底部 dock / 播放条）不出现元素互相遮挡的 DIP 下限；
+// 但 Windows 缩放笔记本上这个下限会大于屏幕：1366×768 物理屏 @150% 的可用 DIP 只有约 911×512，
+// @175% 更小。硬套 1000×700 会把窗口撑出屏幕，右下角（dock 右端、播放控制）跑到屏幕外看不见。
+// 所以真实下限取"布局下限"与"屏幕可用区"的较小者，窗口始终能整块落在 workArea 内。
+const MAIN_WINDOW_PREFERRED_MIN_WIDTH = 1000;
+const MAIN_WINDOW_PREFERRED_MIN_HEIGHT = 700;
+const MAIN_WINDOW_PREFERRED_WIDTH = 1200;
+const MAIN_WINDOW_PREFERRED_HEIGHT = 800;
+// 屏幕再小也不能无限缩：低于这个尺寸顶栏 + 内容 + dock 会挤到无法交互
+const MAIN_WINDOW_HARD_MIN_WIDTH = 720;
+const MAIN_WINDOW_HARD_MIN_HEIGHT = 560;
+// 与任务栏、DWM 阴影/圆角、边缘吸附之间留的余量
+const MAIN_WINDOW_WORK_AREA_MARGIN = 40;
+
+// 与桌面歌词窗（desktop-lyrics-bounds.json）同一套持久化习惯：<userData>/main-window-bounds.json
+const MAIN_WINDOW_BOUNDS_FILE = () => path.join(app.getPath('userData'), 'main-window-bounds.json');
+
+/** 读取已保存的主窗口尺寸；文件缺失/损坏一律返回 null（回落到默认尺寸） */
+function readMainWindowBounds() {
+  try {
+    const file = MAIN_WINDOW_BOUNDS_FILE();
+    if (!fs.existsSync(file)) return null;
+    const data = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    return data && typeof data === 'object' ? data : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * 按屏幕可用工作区（DIP）计算主窗口尺寸约束。纯函数，便于单测。
+ * 目标：窗口永远能完整落在 workArea 内；下限尽量保持 1000×700，屏幕不够时让位给屏幕。
+ * @param {{width:number,height:number}|null} workArea screen.getPrimaryDisplay().workAreaSize
+ * @returns {{minWidth:number,minHeight:number,defaultWidth:number,defaultHeight:number,maxWidth:number,maxHeight:number}}
+ */
+function computeMainWindowConstraints(workArea) {
+  const toSize = (value) => {
+    const num = Math.round(Number(value) || 0);
+    return num > 0 ? num : 1;
+  };
+  const areaWidth = toSize(workArea && workArea.width);
+  const areaHeight = toSize(workArea && workArea.height);
+  const clampValue = (value, lower, upper) => Math.max(lower, Math.min(value, upper));
+
+  // 下限：先按"可用区 - 余量"算，再夹在 [硬下限, 布局下限] 内，最后不超过可用区本身
+  const minOf = (area, preferredMin, hardMin) => clampValue(
+    Math.min(preferredMin, Math.max(hardMin, area - MAIN_WINDOW_WORK_AREA_MARGIN)),
+    1,
+    area
+  );
+  const minWidth = minOf(areaWidth, MAIN_WINDOW_PREFERRED_MIN_WIDTH, MAIN_WINDOW_HARD_MIN_WIDTH);
+  const minHeight = minOf(areaHeight, MAIN_WINDOW_PREFERRED_MIN_HEIGHT, MAIN_WINDOW_HARD_MIN_HEIGHT);
+
+  // 默认尺寸：先用 1200×800，屏幕放不下就收缩到"可用区 - 余量"，再夹进 [下限, 可用区]
+  const defaultOf = (area, preferred, min) =>
+    clampValue(Math.min(preferred, area - MAIN_WINDOW_WORK_AREA_MARGIN), min, area);
+
+  return {
+    minWidth,
+    minHeight,
+    defaultWidth: defaultOf(areaWidth, MAIN_WINDOW_PREFERRED_WIDTH, minWidth),
+    defaultHeight: defaultOf(areaHeight, MAIN_WINDOW_PREFERRED_HEIGHT, minHeight),
+    maxWidth: areaWidth,
+    maxHeight: areaHeight
+  };
+}
+
+/** 拿不到屏幕信息时的兜底约束（等同改造前行为：下限 1000×700、默认 1200×800、不设上限） */
+const MAIN_WINDOW_FALLBACK_LIMITS = {
+  minWidth: MAIN_WINDOW_PREFERRED_MIN_WIDTH,
+  minHeight: MAIN_WINDOW_PREFERRED_MIN_HEIGHT,
+  defaultWidth: MAIN_WINDOW_PREFERRED_WIDTH,
+  defaultHeight: MAIN_WINDOW_PREFERRED_HEIGHT,
+  maxWidth: Number.POSITIVE_INFINITY,
+  maxHeight: Number.POSITIVE_INFINITY
+};
+
+/**
+ * 把读取到的已保存窗口尺寸收敛到当前屏幕允许的范围：
+ * - 低于动态下限（小屏笔记本会小于 1000×700）→ 抬到下限，避免顶栏/dock/播放条互相遮挡；
+ * - 高于 workArea → 夹到 workArea，避免窗口超出屏幕、右下角控件看不见；
+ * - 缺失/非法 → 用动态默认尺寸；x/y 保持原有透传行为。
+ */
+function clampMainWindowBounds(bounds, constraints) {
+  if (!bounds || typeof bounds !== 'object') return null;
+  const limits = constraints || MAIN_WINDOW_FALLBACK_LIMITS;
+  const toInt = (value) => (typeof value === 'number' && Number.isFinite(value) ? Math.round(value) : null);
+  const fit = (value, min, max, fallback) => {
+    const num = toInt(value);
+    if (num === null || num <= 0) return fallback;
+    return Math.max(min, Math.min(num, max));
+  };
+  return {
+    width: fit(bounds.width, limits.minWidth, limits.maxWidth, limits.defaultWidth),
+    height: fit(bounds.height, limits.minHeight, limits.maxHeight, limits.defaultHeight),
+    x: toInt(bounds.x),
+    y: toInt(bounds.y)
+  };
+}
+
 function createWindow() {
+  // screen 模块只能在 app ready 之后访问：createWindow 由 app.whenReady() 回调调用
+  const constraints = computeMainWindowConstraints(screen.getPrimaryDisplay().workAreaSize);
+  // 已保存的窗口尺寸在读取时按当前屏幕的动态下限 clamp（历史脏数据也不能把窗口挤出屏幕）
+  const savedBounds = clampMainWindowBounds(readMainWindowBounds(), constraints);
   mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
+    width: savedBounds ? savedBounds.width : constraints.defaultWidth,
+    height: savedBounds ? savedBounds.height : constraints.defaultHeight,
+    // 再兜一层：用户手动拖拽也不能把主界面拖到动态下限以下
+    minWidth: constraints.minWidth,
+    minHeight: constraints.minHeight,
+    ...(savedBounds && savedBounds.x !== null && savedBounds.y !== null
+      ? { x: savedBounds.x, y: savedBounds.y }
+      : {}),
     frame: false,
     titleBarStyle: 'hidden',
     webPreferences: {
@@ -1576,7 +1701,11 @@ ipcMain.handle('local-match-cover', async (event, payload) => {
   }
 });
 
-/** 应用候选：下载指定 URL 的封面 → 落盘 → 返回协议 URL */
+/**
+ * 应用候选：下载指定 URL 的封面 → 落盘 → 返回协议 URL。
+ * 候选自带的歌手名一并回传（渲染层据此更新曲目作者）；
+ * 这里只做透传，不改写任何用户数据，空值/占位由渲染层忽略。
+ */
 ipcMain.handle('local-apply-cover', async (event, payload) => {
   try {
     const url = payload?.url || '';
@@ -1585,7 +1714,15 @@ ipcMain.handle('local-apply-cover', async (event, payload) => {
     if (!hit) return { code: -1, message: '封面下载失败' };
     const localUrl = persistCoverBuffer(hit.buffer, hit.contentType);
     if (!localUrl) return { code: -1, message: '封面写入失败' };
-    return { code: 0, data: { url: localUrl }, source: payload?.provider || 'manual' };
+    return {
+      code: 0,
+      data: {
+        url: localUrl,
+        artist: String(payload?.artist || '').trim(),
+        name: String(payload?.name || '').trim()
+      },
+      source: payload?.provider || 'manual'
+    };
   } catch (e) {
     console.error('[cover] 应用候选失败:', e.message);
     return { code: -1, message: e.message };
@@ -2508,17 +2645,19 @@ async function fetchLyricFromSource(source, keywords, cleanTitle, cleanArtist) {
   }
 }
 
-// 歌词源 fallback 顺序：网易云（现有主源）→ 酷狗
-const LYRIC_SOURCE_ORDER = ['netease', 'kugou'];
-
-// IPC: 获取歌词（网易云 → 酷狗 依次尝试，返回实际来源）
-ipcMain.handle('get-lyric', async (event, { bvid, cid, title, artist }) => {
+// 歌词源 fallback 顺序：由渲染层传下来的 preferredSource 决定（默认酷狗，未知值兜底 kugou），
+// 首选源失败时自动回退到另一个源 —— 见 electron/lyricSourceOrder.js
+// IPC: 获取歌词（偏好源 → 另一个源 依次尝试，返回实际来源）
+ipcMain.handle('get-lyric', async (event, { bvid, cid, title, artist, preferredSource }) => {
   try {
-    dlog('获取歌词:', { bvid, cid, title, artist });
+    dlog('获取歌词:', { bvid, cid, title, artist, preferredSource });
 
     const { keywords, cleanTitle, cleanArtist } = buildLyricKeywords(title, artist)
 
-    for (const source of LYRIC_SOURCE_ORDER) {
+    const sourceOrder = resolveLyricSourceOrder(preferredSource);
+    dlog('歌词源尝试顺序:', sourceOrder.join(' → '));
+
+    for (const source of sourceOrder) {
       const result = await fetchLyricFromSource(source, keywords, cleanTitle, cleanArtist);
       if (result) {
         return { code: 0, data: result.data, source: result.source };

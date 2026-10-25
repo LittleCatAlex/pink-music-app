@@ -11,7 +11,14 @@ export default defineConfig({
     }
   },
   build: {
-    assetsDir: 'assets'
+    assetsDir: 'assets',
+    rollupOptions: {
+      // 多入口：index.html 主应用 + desktop_lyrics.html 桌面歌词悬浮窗
+      input: {
+        main: path.resolve(__dirname, 'index.html'),
+        desktopLyrics: path.resolve(__dirname, 'desktop_lyrics.html')
+      }
+    }
   },
   server: {
     proxy: {

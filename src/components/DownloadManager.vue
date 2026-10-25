@@ -169,21 +169,31 @@ async function clearTasks() {
 <style scoped>
 .download-manager-overlay {
   position: fixed;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
+  inset: 0;
   background: var(--bg-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 1000;
+  /* 层级：A1 全局 token + 数值兜底 → 170，高于播放页(150)与 Dock(70)，
+     低于 WindowControls(--z-window-controls: 900) */
+  z-index: calc(var(--z-player-page, 150) + 20);
+  /* 面板给底部「播放栏 + Dock」让位：
+     --shell-bottom-reserve 由 A1 的 --shell-* 派生（播发栏 + Dock + 间距），
+     兜底 = --player-height + Dock 占位；顶部让开拖拽条 --shell-dragbar-height */
+  padding:
+    calc(var(--shell-dragbar-height, 38px) + 10px)
+    16px
+    var(--shell-bottom-reserve, calc(var(--player-height, 100px) + 118px));
+  -webkit-app-region: no-drag;
 }
 
 .download-manager {
   width: 90%;
   max-width: 640px;
-  max-height: 80vh;
+  /* 高度吃掉 .download-manager-overlay 让位后的全部可用空间：
+     不再用 80vh 魔法值（1000×700 下 80vh 会压到 Dock 与播放栏） */
+  max-height: 100%;
+  min-height: 0;
   background: var(--bg-primary);
   border-radius: var(--radius-lg);
   border: 1px solid var(--border-color);
@@ -193,6 +203,7 @@ async function clearTasks() {
 }
 
 .download-manager-header {
+  flex: 0 0 auto;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -222,7 +233,10 @@ async function clearTasks() {
 }
 
 .download-manager-actions {
+  /* 不被压缩；宽度不够时换行而不是溢出/裁切（按钮不会消失） */
+  flex: 0 0 auto;
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   padding: 16px 20px;
   border-bottom: 1px solid var(--border-color);
@@ -253,8 +267,10 @@ async function clearTasks() {
 }
 
 .download-list {
-  flex: 1;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 12px 20px 20px;
 }
 
@@ -293,9 +309,13 @@ async function clearTasks() {
 .download-item-meta {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  row-gap: 4px;
   gap: 10px;
   font-size: 12px;
   color: var(--text-secondary);
+  min-width: 0;
 }
 
 .quality-badge {
@@ -424,5 +444,32 @@ async function clearTasks() {
 .task-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* 所有可点元素显式 no-drag */
+.download-manager button {
+  -webkit-app-region: no-drag;
+}
+
+/* 按钮降级阶梯：① 缩内边距 → ② 只留图标（文字视觉隐藏，可访问名称保留）
+   两个必测尺寸（1470×930 / 1000×700）下换行已足够，这两档只在更窄时生效 */
+@media (max-width: 720px) {
+  .download-manager-actions {
+    gap: 8px;
+    padding: 12px 14px;
+  }
+  .download-manager-actions .action-btn {
+    padding: 8px 10px;
+  }
+}
+@media (max-width: 520px) {
+  .download-manager-actions .action-btn span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
 }
 </style>

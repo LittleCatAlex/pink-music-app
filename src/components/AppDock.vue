@@ -7,21 +7,58 @@ const playlistStore = usePlaylistStore()
 const dockTrackRef = ref(null)
 let glassInstance = null
 
+// Liquid Glass 的 <filter> 区域在创建时按当时尺寸固化，尺寸变了要重建，
+// 否则超出旧尺寸的那一段不再走玻璃滤镜（顶栏右侧矩形遮罩即由此产生）。
+let glassResizeObserver = null
+let glassResyncTimer = null
+
+function applyTrackGlass() {
+  const el = dockTrackRef.value
+  if (!el) return
+  if (glassInstance) {
+    destroyLiquidGlass(glassInstance.id)
+    glassInstance = null
+  }
+  const isDark = document.documentElement.getAttribute('data-theme') !== 'light'
+  glassInstance = applyLiquidGlass(el, {
+    width: el.offsetWidth,
+    height: el.offsetHeight,
+    depth: isDark ? 0.06 : 0.08,
+    edgeSoftness: isDark ? 0.35 : 0.3,
+    backdrop: isDark
+      ? 'blur(3px) contrast(1.15) brightness(0.9) saturate(1.2)'
+      : 'blur(2px) contrast(1.25) brightness(1.05) saturate(1.4)'
+  })
+}
+
+function scheduleGlassResync() {
+  const el = dockTrackRef.value
+  if (!el) return
+  if (glassInstance && glassInstance.width === el.offsetWidth && glassInstance.height === el.offsetHeight) return
+  clearTimeout(glassResyncTimer)
+  glassResyncTimer = setTimeout(() => {
+    const target = dockTrackRef.value
+    if (!target) return
+    if (glassInstance && glassInstance.width === target.offsetWidth && glassInstance.height === target.offsetHeight) return
+    applyTrackGlass()
+  }, 180)
+}
+
 onMounted(async () => {
   await nextTick()
-  if (dockTrackRef.value) {
-    const isDark = document.documentElement.getAttribute('data-theme') !== 'light'
-    glassInstance = applyLiquidGlass(dockTrackRef.value, {
-      depth: isDark ? 0.06 : 0.08,
-      edgeSoftness: isDark ? 0.35 : 0.3,
-      backdrop: isDark
-        ? 'blur(3px) contrast(1.15) brightness(0.9) saturate(1.2)'
-        : 'blur(2px) contrast(1.25) brightness(1.05) saturate(1.4)'
-    })
+  applyTrackGlass()
+  if (dockTrackRef.value && typeof ResizeObserver !== 'undefined') {
+    glassResizeObserver = new ResizeObserver(() => scheduleGlassResync())
+    glassResizeObserver.observe(dockTrackRef.value)
   }
 })
 
 onBeforeUnmount(() => {
+  clearTimeout(glassResyncTimer)
+  if (glassResizeObserver) {
+    glassResizeObserver.disconnect()
+    glassResizeObserver = null
+  }
   if (glassInstance) {
     destroyLiquidGlass(glassInstance.id)
     glassInstance = null

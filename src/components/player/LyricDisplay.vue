@@ -34,7 +34,8 @@ const showSearchPanel = ref(false)
 const selectedIndex = ref(0)
 const selectingLyricId = ref(null)
 // 歌词来源切换：netease | kugou
-const searchSource = ref('netease')
+// 初始高亮取自「默认歌词源」设置；用户手动切换仍只影响当前搜索/当前曲目（per-track，不写回设置）
+const searchSource = ref(settingsStore.lyricPreferredSource === 'netease' ? 'netease' : 'kugou')
 const SOURCE_TABS = [
   { key: 'netease', label: '网易云' },
   { key: 'kugou', label: '酷狗' },
@@ -401,7 +402,7 @@ function getSubLines(line) {
     <div v-show="!showSearchPanel" class="lyric-main">
       <div v-if="lyricStore.isLyricLoading" class="lyric-state">
         <div class="spinner"></div>
-        <p>正在从网易云匹配歌词…</p>
+        <p>正在匹配歌词…</p>
       </div>
 
       <div v-else-if="lyricStore.lyricError" class="lyric-state err">
@@ -423,10 +424,12 @@ function getSubLines(line) {
         </Transition>
 
         <!-- 歌词滑动区 -->
+        <!-- 大屏模式不写死高度：由 CSS 撑满列高并在 660px 处封顶，
+             矮窗口（如 1000×700）里视区自动收缩，工具栏不会被挤出窗口 -->
         <div
           ref="viewportRef"
           class="lyric-viewport"
-          :style="{ height: VIEWPORT_HEIGHT + 'px' }"
+          :style="large ? null : { height: VIEWPORT_HEIGHT + 'px' }"
           @wheel.stop="onWheel"
         >
           <div
@@ -679,6 +682,8 @@ function getSubLines(line) {
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  /* 行高是固定值：内容一律夹在本行盒子里，不得溢到相邻行或工具栏 */
+  overflow: hidden;
   gap: 2px;
   color: var(--text-secondary);
   font-size: 14px;
@@ -696,9 +701,14 @@ function getSubLines(line) {
 }
 /* 主行（原文）：继承 .line 的字号/字重规则 */
 .line-main {
-  display: block;
+  /* 最多两行，多出的以省略号收掉：固定行高里主行只给 2 行预算 */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
   max-width: 100%;
-  overflow-wrap: break-word;
+  max-height: 100%;
+  overflow-wrap: anywhere;
   word-break: normal;
 }
 /* 附注行（罗马音/翻译）：小字号弱化，不抢主行焦点 */
@@ -709,7 +719,10 @@ function getSubLines(line) {
   line-height: 1.35;
   color: var(--text-muted);
   opacity: 0.85;
-  overflow-wrap: break-word;
+  /* 附注行固定单行截断：行高预算里只容得下一行附注 */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   word-break: normal;
 }
 .line:hover { color: var(--text-primary); }
@@ -755,13 +768,34 @@ function getSubLines(line) {
      通过 trackStyle 追加 LARGE_SCREEN_CENTER_OFFSET = 4px 把活跃行校正到屏幕正中 (50vh)
    - 一屏可见 5-6 行（620 / 100 ≈ 6.2，配合 past 行隐藏后视觉上更"干净"） */
 .lyric-stage--large {
-  /* 在 .player-page-right (flex stretch) 内不撑满，垂直居中 */
+  /* height: 100%（继承 .lyric-stage 基础规则）现在能真正解析 = 行高 = 播放页剩余高度，
+     所以这一列是"撑满列高"的；align-self / max-height 留作兜底（行高确定后不再起作用）。 */
   align-self: center;
   max-height: 100%;
 }
 .lyric-stage--large .lyric-main {
-  /* = VIEWPORT(620) + actions margin(12) + actions(~28) ≈ 660，整体下沿贴近红线 */
-  height: 660px;
+  /* 660 = 原 VIEWPORT(620) + actions margin(12) + actions(~28)，只作设计上限保留。
+     可用高度不再用 "100vh - 220px" 这种写死的页面 chrome 预算去猜：
+     .player-page-layout 已加 grid-template-rows: minmax(0, 1fr)，
+     行高 = 真实剩余高度（1470×930 → 802，1000×700 → 588），
+     .player-page-right(height:100%) → .lyric-stage(height:100%) 的百分比链因此成立，
+     这里的 100% 就是该剩余高度，窗口有多矮歌词列就收缩多少。
+     -24px（--lyric-badge-reserve）= offset-badge 挂在工具栏下沿 bottom:-22px 的外挂空间 + 2px 余量；
+     不留这段，工具栏贴到列底时 badge 会被 .lyric-stage 的 overflow:hidden 裁掉（Windows 上"微调"看不见）。 */
+  height: min(660px, calc(100% - var(--lyric-badge-reserve, 24px)));
+  max-height: 100%;
+  min-height: 0;
+}
+/* 歌词区吃满剩余高度，视区高度由 CSS 决定（ResizeObserver 会测到真实高度，
+   居中计算的 actualViewportHeight 自动跟随） */
+.lyric-stage--large .lyric-lyrics {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.lyric-stage--large .lyric-viewport {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
 }
 .lyric-stage--large .lyric-viewport {
   /* 加大上下渐隐蒙版，避免字号增大后边缘被裁切 */
@@ -810,12 +844,22 @@ function getSubLines(line) {
 
 /* ===== 工具栏 ===== */
 .lyric-actions {
+  /* 工具栏永不被压缩；列宽不足时换行而不是溢出（按钮不会消失） */
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
   gap: 6px;
+  row-gap: 6px;
   margin-top: 12px;
   position: relative;
   z-index: 1;
+}
+
+/* 所有可点元素显式 no-drag */
+.lyric-stage button {
+  -webkit-app-region: no-drag;
 }
 
 .action-btn {
@@ -853,6 +897,12 @@ function getSubLines(line) {
   position: absolute;
   right: 0;
   bottom: -22px;
+  /* 偏移文案过长时自身截断，不横向长到工具栏按钮上 */
+  max-width: 45%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  z-index: 2;
   font-size: 10px;
   color: rgba(255, 200, 50, 0.85);
   background: rgba(255, 200, 50, 0.1);
@@ -939,6 +989,7 @@ function getSubLines(line) {
   gap: 6px;
   flex-shrink: 0;
   margin-bottom: 8px;
+  min-height: 0;
 }
 .search-bar input {
   flex: 1;
@@ -1017,8 +1068,10 @@ function getSubLines(line) {
 .search-state.error { color: var(--error-color); }
 
 .search-results {
-  flex: 1;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
   gap: 4px;

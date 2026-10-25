@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { createPersistentStorage } from '@/utils/persistentStorage'
 import { s, defineSchema } from '@/utils/schema'
 import { parseLyric as parseLyricPure } from '@/utils/lrcParser'
+import { useSettingsStore } from '@/stores/settings'
 
 // ───────── 持久化结构改造 ─────────
 // 老版本把歌词数据分 3 个 localStorage key：
@@ -356,7 +357,10 @@ export const useLyricStore = defineStore('lyric', {
           }
         }
 
-        const result = await window.electronAPI.getLyric({ bvid, cid, title, artist })
+        // 默认歌词源偏好：主进程据此决定多源尝试顺序（偏好源优先，失败自动回退另一个源）；
+        // 必须在调用点读，用户改设置后下一次取词立即生效
+        const preferredSource = useSettingsStore().lyricPreferredSource === 'netease' ? 'netease' : 'kugou'
+        const result = await window.electronAPI.getLyric({ bvid, cid, title, artist, preferredSource })
         // 网络返回前用户可能已切歌：key 不一致则整段丢弃，避免 A 歌词盖到 B 上
         if (this.currentKey !== cacheKey) {
           return { success: false, error: 'stale' }

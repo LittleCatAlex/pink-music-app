@@ -365,7 +365,9 @@ function autoFetchLocalCover(track) {
     if (url) {
       // 当前正在播放的就是这首 → 同步刷新 UI 与 MediaSession 封面
       if (currentTrack.value && makeTrackKey(currentTrack.value) === makeTrackKey(track)) {
-        currentTrack.value = { ...currentTrack.value, cover: url }
+        // 匹配成功可能顺带把歌手改成封面来源的歌手名（见 localStore.matchCoverFor），播放条跟着换
+        const fresh = localStore.tracks.find(t => t.id === track.id)
+        currentTrack.value = { ...currentTrack.value, cover: url, author: fresh?.author || currentTrack.value.author }
         playerStore.setCurrentTrack(currentTrack.value)
         syncMediaSession()
       }
@@ -1891,23 +1893,81 @@ function handlePinkMusicEvent(event) {
 }
 
 // Liquid Glass：应用 SVG feDisplacementMap 实现的液体玻璃效果
+//
+// 注意：<filter> 的 x/y/width/height 在 applyLiquidGlass 里按"创建那一刻的元素尺寸"固化，
+// 之后窗口变宽不会更新。超出旧尺寸的部分不再经过玻璃滤镜，于是顶栏右侧（主题切换/用户按钮所在区）
+// 会出现一块与顶栏背景不一致的矩形 —— 用户截图里"盖住按钮区"的就是它，不是任何真实的覆盖层。
+// 因此尺寸一变（窗口缩放、最大化/还原、断点切换）就要按新尺寸重建实例。
+const GLASS_OPTIONS = {
+  topbar: {
+    depth: 0.06,
+    edgeSoftness: 0.4,
+    backdrop: 'blur(1.5px) contrast(1.2) brightness(1.05) saturate(1.3)'
+  },
+  playerBar: {
+    depth: 0.08,
+    edgeSoftness: 0.35,
+    backdrop: 'blur(2px) contrast(1.25) brightness(1.05) saturate(1.4)'
+  }
+}
+const GLASS_TARGETS = {
+  topbar: () => topbarRef.value,
+  playerBar: () => playerBarRef.value
+}
+let glassResizeObserver = null
+const glassResyncTimers = new Map()
+
+function mountLiquidGlass(key, el) {
+  if (!el) return
+  const prev = liquidGlassInstances.get(key)
+  if (prev) {
+    destroyLiquidGlass(prev.id)
+    liquidGlassInstances.delete(key)
+  }
+  const inst = applyLiquidGlass(el, {
+    ...GLASS_OPTIONS[key],
+    width: el.offsetWidth,
+    height: el.offsetHeight
+  })
+  if (inst) liquidGlassInstances.set(key, inst)
+}
+
+function scheduleGlassResync(key) {
+  const el = GLASS_TARGETS[key]()
+  if (!el) return
+  const inst = liquidGlassInstances.get(key)
+  // 尺寸没变（只是布局抖动）就什么都不做，避免反复重建 SVG filter
+  if (inst && inst.width === el.offsetWidth && inst.height === el.offsetHeight) return
+  clearTimeout(glassResyncTimers.get(key))
+  glassResyncTimers.set(key, setTimeout(() => {
+    const target = GLASS_TARGETS[key]()
+    if (!target) return
+    const current = liquidGlassInstances.get(key)
+    if (current && current.width === target.offsetWidth && current.height === target.offsetHeight) return
+    mountLiquidGlass(key, target)
+  }, 180))
+}
+
 function setupLiquidGlass() {
-  if (topbarRef.value && !liquidGlassInstances.has('topbar')) {
-    const inst = applyLiquidGlass(topbarRef.value, {
-      depth: 0.06,
-      edgeSoftness: 0.4,
-      backdrop: 'blur(1.5px) contrast(1.2) brightness(1.05) saturate(1.3)'
-    })
-    if (inst) liquidGlassInstances.set('topbar', inst)
+  const observing = new Set()
+  for (const key of Object.keys(GLASS_OPTIONS)) {
+    const el = GLASS_TARGETS[key]()
+    if (!el) continue
+    if (!liquidGlassInstances.has(key)) mountLiquidGlass(key, el)
+    observing.add(el)
   }
-  if (playerBarRef.value && !liquidGlassInstances.has('playerBar')) {
-    const inst = applyLiquidGlass(playerBarRef.value, {
-      depth: 0.08,
-      edgeSoftness: 0.35,
-      backdrop: 'blur(2px) contrast(1.25) brightness(1.05) saturate(1.4)'
+  if (observing.size === 0 || typeof ResizeObserver === 'undefined') return
+  if (!glassResizeObserver) {
+    glassResizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        for (const key of Object.keys(GLASS_TARGETS)) {
+          if (entry.target === GLASS_TARGETS[key]()) scheduleGlassResync(key)
+        }
+      }
     })
-    if (inst) liquidGlassInstances.set('playerBar', inst)
   }
+  // 播放栏是 v-if 后出现的，每次都重新对当前存在的目标调用一次 observe（重复调用无副作用）
+  for (const el of observing) glassResizeObserver.observe(el)
 }
 
 // macOS 原生菜单命令处理
@@ -2207,6 +2267,12 @@ onUnmounted(() => {
   window.removeEventListener('pink-music:open-download', handlePinkMusicEvent)
   window.removeEventListener('pink-music:open-login', handlePinkMusicEvent)
   window.removeEventListener('pink-music:open-playlist', handlePinkMusicEvent)
+  if (glassResizeObserver) {
+    glassResizeObserver.disconnect()
+    glassResizeObserver = null
+  }
+  glassResyncTimers.forEach((timer) => clearTimeout(timer))
+  glassResyncTimers.clear()
   liquidGlassInstances.forEach((inst) => destroyLiquidGlass(inst.id))
   liquidGlassInstances.clear()
 })

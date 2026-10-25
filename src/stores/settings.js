@@ -15,8 +15,10 @@ let _persistChain = Promise.resolve()
 // Schema v9：新增启动时自动检查更新开关 checkUpdateOnStartup
 // Schema v10：新增本地音乐库相关开关 localIncludeUnplayable / localCheckMissingOnStartup
 // Schema v11：新增本地封面自动匹配开关 localAutoFetchCover
+// Schema v12：新增默认歌词源偏好 lyricPreferredSource（默认酷狗；老数据缺失时迁移补默认值）
+// Schema v13：新增桌面歌词高对比模式开关 desktopLyricsHighContrast
 const settingsSchema = defineSchema({
-  version: 11,
+  version: 13,
   fields: {
     audioQuality: s.enum(['auto', 'lossless', 'high', 'medium', 'low'], 'auto'),
     // 首次启动默认关闭：可视化较吃性能，需要时在引导页或「我的 → 设置」里开启
@@ -27,8 +29,12 @@ const settingsSchema = defineSchema({
     eqPreset: s.string('flat'),
     windowControlsEnabled: s.boolean(true),
     lyricDisplayMode: s.enum(['original', 'romaji', 'translation'], 'original'),
+    // 默认歌词源：语义是「优先使用」，取词失败时主进程自动回退到另一个源（electron/lyricSourceOrder.js）
+    lyricPreferredSource: s.enum(['kugou', 'netease'], 'kugou'),
     desktopLyricsLocked: s.boolean(false),
     desktopLyricsHotkey: s.string('CommandOrControl+D'),
+    // 高对比：浅色壁纸/浅色主题下歌词窗改用白字描边，避免歌词发虚
+    desktopLyricsHighContrast: s.boolean(false),
     onboardingCompleted: s.boolean(false),
     checkUpdateOnStartup: s.boolean(true),
     // 本地音乐库
@@ -59,7 +65,15 @@ const settingsSchema = defineSchema({
       localCheckMissingOnStartup: data.localCheckMissingOnStartup ?? true
     }),
     // v10 → v11：补本地封面自动匹配开关默认值（默认关闭，避免导入时大量网络请求）
-    10: (data) => ({ ...data, localAutoFetchCover: data.localAutoFetchCover ?? false })
+    10: (data) => ({ ...data, localAutoFetchCover: data.localAutoFetchCover ?? false }),
+    // v11 → v12：补默认歌词源偏好（默认酷狗；非法值同样兜底为酷狗，不留脏数据）
+    11: (data) => ({
+      ...data,
+      lyricPreferredSource: data.lyricPreferredSource === 'netease' ? 'netease' : 'kugou'
+    }),
+    // v12 → v13：补桌面歌词高对比模式默认值（默认关闭，保持既有视觉）
+    // 注意：loader 按 migrations[目标版本] 取迁移函数（见 utils/schema.js），v12→v13 对应 key 13
+    13: (data) => ({ ...data, desktopLyricsHighContrast: data.desktopLyricsHighContrast ?? false })
   }
 })
 
@@ -109,10 +123,13 @@ export const useSettingsStore = defineStore('settings', {
     lyricDisplayMode: typeof _peekedSettings.lyricDisplayMode === 'string'
       ? _peekedSettings.lyricDisplayMode
       : 'original',
+    // 老数据（无该键 / 非法值）一律落到默认 'kugou'
+    lyricPreferredSource: _peekedSettings.lyricPreferredSource === 'netease' ? 'netease' : 'kugou',
     desktopLyricsLocked: !!_peekedSettings.desktopLyricsLocked,
     desktopLyricsHotkey: typeof _peekedSettings.desktopLyricsHotkey === 'string'
       ? _peekedSettings.desktopLyricsHotkey
       : 'CommandOrControl+D',
+    desktopLyricsHighContrast: _peekedSettings.desktopLyricsHighContrast === true,
     onboardingCompleted: _peekedSettings.onboardingCompleted === true,
     checkUpdateOnStartup: typeof _peekedSettings.checkUpdateOnStartup === 'boolean'
       ? _peekedSettings.checkUpdateOnStartup
@@ -141,8 +158,12 @@ export const useSettingsStore = defineStore('settings', {
         if (typeof data.audioQuality === 'string') this.audioQuality = data.audioQuality
         if (typeof data.windowControlsEnabled === 'boolean') this.windowControlsEnabled = data.windowControlsEnabled
         if (typeof data.lyricDisplayMode === 'string') this.lyricDisplayMode = data.lyricDisplayMode
+        if (data.lyricPreferredSource === 'kugou' || data.lyricPreferredSource === 'netease') {
+          this.lyricPreferredSource = data.lyricPreferredSource
+        }
         if (typeof data.desktopLyricsLocked === 'boolean') this.desktopLyricsLocked = data.desktopLyricsLocked
         if (typeof data.desktopLyricsHotkey === 'string' && data.desktopLyricsHotkey) this.desktopLyricsHotkey = data.desktopLyricsHotkey
+        if (typeof data.desktopLyricsHighContrast === 'boolean') this.desktopLyricsHighContrast = data.desktopLyricsHighContrast
         if (typeof data.onboardingCompleted === 'boolean') this.onboardingCompleted = data.onboardingCompleted
         if (typeof data.checkUpdateOnStartup === 'boolean') this.checkUpdateOnStartup = data.checkUpdateOnStartup
         if (typeof data.localIncludeUnplayable === 'boolean') this.localIncludeUnplayable = data.localIncludeUnplayable
@@ -207,6 +228,16 @@ export const useSettingsStore = defineStore('settings', {
       window.dispatchEvent(new CustomEvent('pink-music:lyric-mode-changed', { detail: mode }))
     },
     /**
+     * 默认歌词源偏好（'kugou' | 'netease'）。
+     * 语义是「优先使用」：主进程按 [偏好源, 另一个源] 顺序尝试，偏好源失败仍会回退。
+     * 非法值直接忽略（保持现值），避免脏数据写进持久化快照。
+     */
+    setLyricPreferredSource(source) {
+      if (source !== 'kugou' && source !== 'netease') return
+      this.lyricPreferredSource = source
+      this.persist()
+    },
+    /**
      * 桌面歌词锁定态（唯一保留的桌面歌词设置项）。
      * 锁定后歌词窗点击穿透；解锁入口在主窗口播放栏按钮或全局快捷键。
      */
@@ -222,6 +253,14 @@ export const useSettingsStore = defineStore('settings', {
     setDesktopLyricsHotkey(accel) {
       if (typeof accel !== 'string' || !accel) return
       this.desktopLyricsHotkey = accel
+      this.persist()
+    },
+    /**
+     * 桌面歌词高对比模式：浅色壁纸 / 浅色主题下歌词窗改用白字描边，避免歌词发虚。
+     * 只影响桌面歌词窗（主窗口视觉不变），切换即持久化。
+     */
+    setDesktopLyricsHighContrast(enabled) {
+      this.desktopLyricsHighContrast = !!enabled
       this.persist()
     },
     setEQEnabled(enabled) {
@@ -277,8 +316,10 @@ export const useSettingsStore = defineStore('settings', {
           eqPreset: this.eqPreset,
           windowControlsEnabled: this.windowControlsEnabled,
           lyricDisplayMode: this.lyricDisplayMode,
+          lyricPreferredSource: this.lyricPreferredSource,
           desktopLyricsLocked: this.desktopLyricsLocked,
           desktopLyricsHotkey: this.desktopLyricsHotkey,
+          desktopLyricsHighContrast: this.desktopLyricsHighContrast,
           onboardingCompleted: this.onboardingCompleted,
           checkUpdateOnStartup: this.checkUpdateOnStartup,
           localIncludeUnplayable: this.localIncludeUnplayable,

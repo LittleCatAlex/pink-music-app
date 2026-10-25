@@ -1,0 +1,36 @@
+/* ============================================================
+   宽屏（≥1800px）构图收敛
+   ------------------------------------------------------------
+   问题：.main-content 只有 padding（2xl / 3xl），没有最大宽度 ——
+   4K/1x（4096px 视口）下内容列被拉到 4000px 宽，
+   hero 成了一条 4000x192 的空条，歌单页单卡被撑到 776x839。
+   修法：只在高分屏断点内给内容列限宽并居中，网格列数随限宽收敛。
+   边界：所有规则都在 min-width:1800px 内，≤1799px 逐像素不变；
+   2048x1080 也不变：(2048 - 2100) / 2 < 0，max() 回落到 48px，
+   与原 padding-inline: var(--spacing-3xl) 一致。
+   ============================================================ */
+
+@media (min-width: 1800px) {
+  :root {
+    /* 内容列上限：≈ 一台 1700px 笔记本的可用宽度，卡片尺寸与 1470 档同一视觉量级 */
+    --content-max-width: 2100px;
+  }
+
+  .main-content {
+    /* 左右 padding 兜底 3xl；内容列被限制到 --content-max-width 时改为等分剩余空间。
+       只覆盖 inline 方向，block 方向仍由 style.css 的 padding 简写决定。
+       视口 ≤ 2196px 时该式取值为负 → max() 回落到 48px，与原值逐像素相同。 */
+    padding-inline: max(var(--spacing-3xl), calc((100% - var(--content-max-width)) / 2));
+  }
+
+  /* 限宽真正生效（视口 ≥ 2200px）后才改网格列：
+     5 列定宽列在 2100 内容列下仍会把单卡撑到 ~400px，改用 auto-fill + 260px
+     最小轨道后列数收敛到 7 列、单卡 ~276-279px（与 1470 档的 250px 同一量级）。
+     阈值与限宽阈值对齐，保证 2048x1080 仍走 5 列，构图不变。 */
+  @media (min-width: 2200px) {
+    .card-grid,
+    .playlist-cards-grid {
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    }
+  }
+}

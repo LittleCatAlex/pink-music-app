@@ -134,20 +134,26 @@ function onBtnMouseDown(e) {
 <style scoped>
 .window-controls {
   position: fixed;
-  /* 顶到屏幕最右上角，与 38px 高的 drag-bar 同行 */
+  /* 顶到屏幕最右上角，与 drag-bar 同行（高度跟随 A1 的 --shell-dragbar-height） */
   top: 0;
   right: 0;
-  height: 38px;
+  height: var(--shell-dragbar-height, 38px);
   display: flex;
   align-items: center;
   gap: 0;
   padding: 0 6px;
-  z-index: 1001;
+  /* 层级：A1 全局 token + 数值兜底（900）。必须永远压在所有浮层之上，
+     否则 .drag-bar（--z-dragbar: 40）或任何弹窗会把窗口按钮盖掉/吞掉点击 */
+  z-index: var(--z-window-controls, 900);
+  /* 容器本身不接收点击：只有按钮可点，容器留白不会遮挡内容区按钮 */
+  pointer-events: none;
   /* 控件本身不要触发拖动；按钮单独再设一次 no-drag，避免父容器 drag 吞掉 click */
   -webkit-app-region: no-drag;
 }
 
 .control-btn {
+  /* 与父容器 pointer-events: none 配对 */
+  pointer-events: auto;
   width: 30px;
   height: 28px;
   border: none;
@@ -200,18 +206,18 @@ function onBtnMouseDown(e) {
 }
 
 /* 浅色模式：默认色用更深的灰色，与白底对比 */
-:global([data-theme="light"]) .control-btn {
+:root[data-theme="light"] .control-btn {
   color: var(--text-secondary);
 }
-:global([data-theme="light"]) .control-btn:hover {
+:root[data-theme="light"] .control-btn:hover {
   background: var(--bg-card-hover);
   color: var(--text-primary);
 }
-:global([data-theme="light"]) .control-btn.close:hover {
+:root[data-theme="light"] .control-btn.close:hover {
   background: var(--error-color);
   color: #fff;
 }
-:global([data-theme="light"]) .control-btn.close:active {
+:root[data-theme="light"] .control-btn.close:active {
   background: var(--error-color);
   color: #fff;
   filter: brightness(0.88);
