@@ -8,6 +8,10 @@ const { searchKugou, getKugouLyric } = require('./lyricSources');
 const { resolveLyricSourceOrder } = require('./lyricSourceOrder');
 const { resolveLyricsWindowPosition } = require('./lyricsWindowBounds');
 
+if (!process.env.NODE_ENV) {
+  process.env.NODE_ENV = app.isPackaged ? 'production' : 'development';
+}
+
 // 显式固定 userData 目录，使开发版（npm run electron:dev）和
 // 打包版（electron-builder）走同一个目录，B 站登录 cookie 互通、长期保持登录态。
 // 默认情况下，Electron 在开发模式用 package.json#name、打包后用 productName，
