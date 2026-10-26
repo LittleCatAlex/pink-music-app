@@ -4,5 +4,7 @@ release/
 .DS_Store
 Thumbs.db
 *.log
+screenshots/*.jpg
+screenshots/*.jpeg
 .env
 .env.local
