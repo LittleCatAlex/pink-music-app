@@ -498,6 +498,35 @@ body {
   }
 }
 
+
+/* ==================== 自定义背景 ==================== */
+.custom-app-background {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  overflow: hidden;
+}
+
+.custom-bg-layer {
+  position: absolute;
+  inset: -40px;
+  background-repeat: no-repeat;
+  transition: opacity 0.2s ease, filter 0.2s ease, transform 0.2s ease;
+  will-change: transform, opacity, filter;
+}
+
+.custom-bg-mask {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  transition: background-color 0.2s ease;
+}
+
+.app-container.has-custom-bg::before {
+  opacity: 0.12 !important;
+}
+
 .app-container::after {
   content: '';
   position: absolute;

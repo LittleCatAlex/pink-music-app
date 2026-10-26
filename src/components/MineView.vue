@@ -1,5 +1,6 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import CustomBackgroundSettings from './CustomBackgroundSettings.vue'
 import { useUserStore, usePlayerStore, usePlaylistStore, useSettingsStore, useThemeStore, useUpdateStore } from '../stores'
 import { parseDuration } from '../utils/bilibili'
 import { EQ_BANDS, EQ_PRESET_KEYS, EQ_PRESET_LABELS, EQ_DB_MIN, EQ_DB_MAX } from '../utils/audioEQ'
@@ -628,6 +629,12 @@ function handleOpenSettings() {
             </div>
           </div>
         </div>
+      </div>
+
+      <!-- 自定义背景设置 -->
+      <div class="settings-section glass-card">
+        <h3>自定义背景</h3>
+        <CustomBackgroundSettings />
       </div>
 
       <div class="settings-section glass-card">

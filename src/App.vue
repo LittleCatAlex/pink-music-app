@@ -59,6 +59,41 @@ const themeStore = useThemeStore()
 const updateStore = useUpdateStore()
 const localStore = useLocalStore()
 
+// 自定义背景样式计算
+const customBgLayerStyle = computed(() => {
+  if (!themeStore.customBgEnabled || !themeStore.customBgUrl) return {}
+  const posX = themeStore.customBgPosX ?? 50
+  const posY = themeStore.customBgPosY ?? 50
+  const fit = themeStore.customBgFit || 'cover'
+  const scale = themeStore.customBgScale ?? 1
+  const blur = themeStore.customBgBlur ?? 0
+  const opacity = themeStore.customBgOpacity ?? 0.8
+
+  const size = fit === 'custom' ? `${Math.round(scale * 100)}%` : fit
+  const transform = fit === 'custom' ? 'none' : `scale(${scale})`
+
+  return {
+    backgroundImage: `url("${themeStore.customBgUrl}")`,
+    backgroundPosition: `${posX}% ${posY}%`,
+    backgroundSize: size,
+    opacity: opacity,
+    filter: blur > 0 ? `blur(${blur}px)` : 'none',
+    transform: transform,
+    transformOrigin: `${posX}% ${posY}%`
+  }
+})
+
+const customBgMaskStyle = computed(() => {
+  const maskOpacity = themeStore.customBgMaskOpacity ?? 0.3
+  const isLight = themeStore.currentTheme === 'light'
+  const r = isLight ? 250 : 10
+  const g = isLight ? 250 : 10
+  const b = isLight ? 255 : 20
+  return {
+    backgroundColor: `rgba(${r}, ${g}, ${b}, ${maskOpacity})`
+  }
+})
+
 // Helper function to strip HTML tags
 function stripHtmlTags(html) {
   return html.replace(/<[^>]*>/g, '');
@@ -2283,7 +2318,16 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="app-container">
+  <div class="app-container" :class="{ 'has-custom-bg': themeStore.customBgEnabled && themeStore.customBgUrl }">
+    <!-- 自定义背景层 -->
+    <div
+      v-if="themeStore.customBgEnabled && themeStore.customBgUrl"
+      class="custom-app-background"
+      aria-hidden="true"
+    >
+      <div class="custom-bg-layer" :style="customBgLayerStyle"></div>
+      <div class="custom-bg-mask" :style="customBgMaskStyle"></div>
+    </div>
     <div class="drag-bar"></div>
     <WindowControls />
     <header ref="topbarRef" class="topbar">
