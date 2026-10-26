@@ -554,6 +554,26 @@ export function setupWebElectronAPI() {
       return { response: ok ? 0 : 1 };
     },
 
+    async setWindowOpacity(opacity) {
+      return { code: 0 };
+    },
+
+    discord: {
+      async updateActivity(activity) {
+        // Web 模式无本地 Discord IPC
+        return { code: 0 };
+      },
+      async clearActivity() {
+        return { code: 0 };
+      },
+      async setEnabled(enabled) {
+        return { code: 0 };
+      },
+      async getStatus() {
+        return { code: 0, data: { enabled: true, connected: false } };
+      }
+    },
+
     // 本地音乐库降级占位
     local: {
       async importFiles() {

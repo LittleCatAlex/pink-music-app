@@ -2,11 +2,11 @@ import { defineStore } from 'pinia'
 import { createPersistentStorage } from '@/utils/persistentStorage'
 import { s, defineSchema } from '@/utils/schema'
 
-// Schema v2：主题、颜色与自定义背景设置
+// Schema v3：主题、颜色、自定义背景、界面透明度与 Discord RPC
 // 已知 currentTheme: 'light' | 'dark' | 'apple-light' | 'apple-dark'
 // 已知 currentColor: 'pink' | 'blue' | 'green' | 'orange' | 'purple'
 const themeSchema = defineSchema({
-  version: 2,
+  version: 3,
   fields: {
     currentTheme: s.string('dark'),
     currentColor: s.string('pink'),
@@ -20,7 +20,12 @@ const themeSchema = defineSchema({
     customBgPosX: s.number(0, 100, 50),
     customBgPosY: s.number(0, 100, 50),
     customBgFit: s.string('cover'),
-    customBgMaskOpacity: s.number(0, 1, 0.3)
+    customBgMaskOpacity: s.number(0, 1, 0.3),
+    // 界面与窗口透明度
+    uiOpacity: s.number(0.1, 1, 0.85),
+    windowOpacity: s.number(0.2, 1, 1),
+    // Discord Rich Presence
+    discordRpcEnabled: s.boolean(true)
   },
   migrations: {
     2: (data) => ({
@@ -35,6 +40,12 @@ const themeSchema = defineSchema({
       customBgPosY: data.customBgPosY ?? 50,
       customBgFit: data.customBgFit ?? 'cover',
       customBgMaskOpacity: data.customBgMaskOpacity ?? 0.3
+    }),
+    3: (data) => ({
+      ...data,
+      uiOpacity: data.uiOpacity ?? 0.85,
+      windowOpacity: data.windowOpacity ?? 1,
+      discordRpcEnabled: data.discordRpcEnabled ?? true
     })
   }
 })
@@ -42,7 +53,7 @@ const themeSchema = defineSchema({
 // 主存储 key：theme；localStorage 兜底：'pink-music-theme'
 const storage = createPersistentStorage('theme', { schema: themeSchema, debounceMs: 200 })
 
-// 默认背景初始值
+// 默认背景与透明度初始值
 const defaultBgValues = {
   customBgEnabled: false,
   customBgUrl: '',
@@ -53,7 +64,10 @@ const defaultBgValues = {
   customBgPosX: 50,
   customBgPosY: 50,
   customBgFit: 'cover',
-  customBgMaskOpacity: 0.3
+  customBgMaskOpacity: 0.3,
+  uiOpacity: 0.85,
+  windowOpacity: 1,
+  discordRpcEnabled: true
 }
 
 // localStorage 同步初值（防首屏闪烁；主存储 load() 完成后会覆盖）
@@ -84,7 +98,10 @@ const initialState = {
   customBgPosX: typeof initialTheme === 'object' ? (initialTheme?.customBgPosX ?? 50) : 50,
   customBgPosY: typeof initialTheme === 'object' ? (initialTheme?.customBgPosY ?? 50) : 50,
   customBgFit: typeof initialTheme === 'object' ? (initialTheme?.customBgFit || 'cover') : 'cover',
-  customBgMaskOpacity: typeof initialTheme === 'object' ? (initialTheme?.customBgMaskOpacity ?? 0.3) : 0.3
+  customBgMaskOpacity: typeof initialTheme === 'object' ? (initialTheme?.customBgMaskOpacity ?? 0.3) : 0.3,
+  uiOpacity: typeof initialTheme === 'object' ? (initialTheme?.uiOpacity ?? 0.85) : 0.85,
+  windowOpacity: typeof initialTheme === 'object' ? (initialTheme?.windowOpacity ?? 1) : 1,
+  discordRpcEnabled: typeof initialTheme === 'object' ? (initialTheme?.discordRpcEnabled ?? true) : true
 }
 
 export const useThemeStore = defineStore('theme', {
@@ -106,7 +123,10 @@ export const useThemeStore = defineStore('theme', {
         customBgPosX: this.customBgPosX,
         customBgPosY: this.customBgPosY,
         customBgFit: this.customBgFit,
-        customBgMaskOpacity: this.customBgMaskOpacity
+        customBgMaskOpacity: this.customBgMaskOpacity,
+        uiOpacity: this.uiOpacity,
+        windowOpacity: this.windowOpacity,
+        discordRpcEnabled: this.discordRpcEnabled
       })
       this.currentTheme = data.currentTheme || 'dark'
       this.currentColor = data.currentColor || 'pink'
@@ -120,22 +140,82 @@ export const useThemeStore = defineStore('theme', {
       this.customBgPosY = data.customBgPosY ?? 50
       this.customBgFit = data.customBgFit || 'cover'
       this.customBgMaskOpacity = data.customBgMaskOpacity ?? 0.3
+      this.uiOpacity = data.uiOpacity ?? 0.85
+      this.windowOpacity = data.windowOpacity ?? 1
+      this.discordRpcEnabled = data.discordRpcEnabled !== false
       this.initTheme()
     },
 
     setTheme(theme) {
       this.currentTheme = theme
+      this.applyUiStyles()
       this.persist()
       document.documentElement.setAttribute('data-theme', theme)
     },
     setColor(color) {
       this.currentColor = color
+      this.applyUiStyles()
       this.persist()
       document.documentElement.setAttribute('data-color', color)
     },
     initTheme() {
       document.documentElement.setAttribute('data-theme', this.currentTheme)
       document.documentElement.setAttribute('data-color', this.currentColor)
+      this.applyUiStyles()
+      if (typeof window !== 'undefined' && window.electronAPI?.discord?.setEnabled) {
+        try {
+          window.electronAPI.discord.setEnabled(this.discordRpcEnabled)
+        } catch (_) {}
+      }
+    },
+
+    // 动态应用界面透明度与毛玻璃 CSS 变量
+    applyUiStyles() {
+      const opacity = this.uiOpacity ?? 0.85
+      if (typeof document !== 'undefined' && document.documentElement) {
+        document.documentElement.style.setProperty('--ui-opacity', String(opacity))
+        
+        // 动态计算玻璃与卡片背景 alpha
+        const isLight = this.currentTheme === 'light'
+        const baseGlassAlpha = isLight ? 0.82 : 0.65
+        const baseCardAlpha = isLight ? 0.9 : 0.85
+
+        const glassAlpha = Math.max(0.04, Math.min(1, Number((baseGlassAlpha * opacity).toFixed(3))))
+        const cardAlpha = Math.max(0.06, Math.min(1, Number((baseCardAlpha * opacity).toFixed(3))))
+
+        if (isLight) {
+          document.documentElement.style.setProperty('--glass-bg', `rgba(255, 255, 255, ${glassAlpha})`)
+          document.documentElement.style.setProperty('--bg-card', `rgba(255, 255, 255, ${cardAlpha})`)
+        } else {
+          document.documentElement.style.setProperty('--glass-bg', `rgba(26, 26, 46, ${glassAlpha})`)
+          document.documentElement.style.setProperty('--bg-card', `rgba(26, 26, 46, ${cardAlpha})`)
+        }
+      }
+      if (typeof window !== 'undefined' && window.electronAPI?.setWindowOpacity) {
+        try {
+          window.electronAPI.setWindowOpacity(this.windowOpacity ?? 1)
+        } catch (_) {}
+      }
+    },
+
+    setUiOpacity(val) {
+      this.uiOpacity = Math.max(0.1, Math.min(1, Number(val) ?? 0.85))
+      this.applyUiStyles()
+      this.persist()
+    },
+    setWindowOpacity(val) {
+      this.windowOpacity = Math.max(0.2, Math.min(1, Number(val) ?? 1))
+      this.applyUiStyles()
+      this.persist()
+    },
+    setDiscordRpcEnabled(enabled) {
+      this.discordRpcEnabled = !!enabled
+      if (typeof window !== 'undefined' && window.electronAPI?.discord?.setEnabled) {
+        try {
+          window.electronAPI.discord.setEnabled(this.discordRpcEnabled)
+        } catch (_) {}
+      }
+      this.persist()
     },
 
     // 自定义背景相关操作
@@ -209,6 +289,9 @@ export const useThemeStore = defineStore('theme', {
       this.customBgPosY = 50
       this.customBgFit = 'cover'
       this.customBgMaskOpacity = 0.3
+      this.uiOpacity = 0.85
+      this.windowOpacity = 1
+      this.applyUiStyles()
       this.persist()
     },
     clearCustomBg() {
@@ -231,7 +314,10 @@ export const useThemeStore = defineStore('theme', {
         customBgPosX: this.customBgPosX,
         customBgPosY: this.customBgPosY,
         customBgFit: this.customBgFit,
-        customBgMaskOpacity: this.customBgMaskOpacity
+        customBgMaskOpacity: this.customBgMaskOpacity,
+        uiOpacity: this.uiOpacity,
+        windowOpacity: this.windowOpacity,
+        discordRpcEnabled: this.discordRpcEnabled
       })
     }
   }

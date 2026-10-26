@@ -100,8 +100,28 @@ function stripHtmlTags(html) {
 }
 
 // Media Session 由 audioEngine.updateMediaSession 统一维护（避免 timeupdate 里高频刷新）
+function syncDiscordRpc() {
+  if (typeof window === 'undefined' || !window.electronAPI?.discord) return;
+  const track = currentTrack.value;
+  if (!track || !track.title) {
+    try { window.electronAPI.discord.clearActivity(); } catch (_) {}
+    return;
+  }
+  try {
+    window.electronAPI.discord.updateActivity({
+      title: track.title,
+      artist: track.artist || track.author || '',
+      duration: duration.value || track.duration || 0,
+      currentTime: currentTime.value || 0,
+      isPlaying: isPlaying.value,
+      cover: track.cover || track.pic || ''
+    });
+  } catch (_) {}
+}
+
 function syncMediaSession() {
-  updateMediaSession(currentTrack.value, isPlaying.value)
+  updateMediaSession(currentTrack.value, isPlaying.value);
+  syncDiscordRpc();
 }
 
 function setupMediaSessionHandlers() {

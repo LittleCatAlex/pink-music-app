@@ -7,6 +7,7 @@ const crypto = require('crypto');
 const { searchKugou, getKugouLyric } = require('./lyricSources');
 const { resolveLyricSourceOrder } = require('./lyricSourceOrder');
 const { resolveLyricsWindowPosition } = require('./lyricsWindowBounds');
+const { discordRpcManager } = require('./discordRpc');
 
 if (!process.env.NODE_ENV) {
   process.env.NODE_ENV = app.isPackaged ? 'production' : 'development';
@@ -1373,6 +1374,7 @@ app.whenReady().then(async () => {
   buildApplicationMenu();
   // 注册桌面歌词全局快捷键（读渲染层持久化的 settings.json 初值）
   applyLyricsHotkey(getStoredLyricsHotkey(), null);
+  try { discordRpcManager.init(); } catch (e) { console.warn('Discord RPC init error:', e.message); }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -1392,6 +1394,7 @@ app.on('before-quit', (event) => {
 
   // 0) 注销全局快捷键，避免退出瞬间按键仍触发 toggle
   try { globalShortcut.unregisterAll() } catch (_) {}
+  try { discordRpcManager.destroy(); } catch (_) {}
 
   // 0.5) 缓存索引立即落盘（下载/播放期间是 debounce 写）
   try { cacheManager.flush() } catch (e) {
@@ -2410,6 +2413,36 @@ ipcMain.handle('is-window-maximized', () => {
     return { code: 0, isMaximized: window.isMaximized() };
   }
   return { code: 0, isMaximized: false };
+});
+
+// 窗口透明度控制
+ipcMain.handle('set-window-opacity', (event, opacity) => {
+  const window = mainWindow || BrowserWindow.getFocusedWindow();
+  if (window && !window.isDestroyed()) {
+    const safeOpacity = Math.max(0.1, Math.min(1.0, Number(opacity) || 1.0));
+    window.setOpacity(safeOpacity);
+  }
+  return { code: 0 };
+});
+
+// Discord Rich Presence 控制
+ipcMain.handle('discord-update-activity', (event, activity) => {
+  discordRpcManager.setActivity(activity);
+  return { code: 0 };
+});
+
+ipcMain.handle('discord-clear-activity', () => {
+  discordRpcManager.clearActivity();
+  return { code: 0 };
+});
+
+ipcMain.handle('discord-set-enabled', (event, enabled) => {
+  discordRpcManager.setEnabled(enabled);
+  return { code: 0 };
+});
+
+ipcMain.handle('discord-get-status', () => {
+  return { code: 0, data: discordRpcManager.getStatus() };
 });
 
 ipcMain.handle('get-platform', () => {

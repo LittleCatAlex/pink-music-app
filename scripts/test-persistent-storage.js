@@ -16,29 +16,37 @@ const storageMock = (() => {
   };
 })();
 
-// Test 1: Theme and Custom Background persistence schema
+// Test 1: Theme, Custom Background and UI Transparency schema
 const themeSettings = {
-  activeTheme: 'custom',
+  currentTheme: 'dark',
+  currentColor: 'pink',
+  customBgEnabled: true,
   customBgUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
-  bgOpacity: 0.85,
-  bgBlur: 10,
-  bgScale: 1.1,
-  bgPosition: 'center center',
-  bgMaskDarkness: 0.25
+  customBgOpacity: 0.85,
+  customBgBlur: 10,
+  customBgScale: 1.1,
+  customBgPosition: 'center',
+  customBgMaskOpacity: 0.25,
+  uiOpacity: 0.65,
+  windowOpacity: 0.95,
+  discordRpcEnabled: true
 };
 
-storageMock.setItem('theme_settings', JSON.stringify(themeSettings));
-const retrieved = JSON.parse(storageMock.getItem('theme_settings'));
+storageMock.setItem('pink-music-theme', JSON.stringify(themeSettings));
+const retrieved = JSON.parse(storageMock.getItem('pink-music-theme'));
 
-assert.strictEqual(retrieved.activeTheme, 'custom');
-assert.strictEqual(retrieved.bgOpacity, 0.85);
-assert.strictEqual(retrieved.bgBlur, 10);
-assert.strictEqual(retrieved.bgScale, 1.1);
-assert.strictEqual(retrieved.bgPosition, 'center center');
-assert.strictEqual(retrieved.bgMaskDarkness, 0.25);
+assert.strictEqual(retrieved.currentTheme, 'dark');
+assert.strictEqual(retrieved.customBgOpacity, 0.85);
+assert.strictEqual(retrieved.customBgBlur, 10);
+assert.strictEqual(retrieved.customBgScale, 1.1);
+assert.strictEqual(retrieved.customBgPosition, 'center');
+assert.strictEqual(retrieved.customBgMaskOpacity, 0.25);
+assert.strictEqual(retrieved.uiOpacity, 0.65);
+assert.strictEqual(retrieved.windowOpacity, 0.95);
+assert.strictEqual(retrieved.discordRpcEnabled, true);
 assert.ok(retrieved.customBgUrl.startsWith('data:image/'));
 
-console.log('✓ Theme and custom background persistence verified.');
+console.log('✓ Theme, custom background and UI opacity persistence verified.');
 
 // Test 2: Bilibili cookie persistence
 const cookies = {

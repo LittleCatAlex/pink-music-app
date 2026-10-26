@@ -40,6 +40,15 @@ const BLUR_PRESETS = [
   { value: 30, label: '深度 (30px)' }
 ]
 
+const UI_OPACITY_PRESETS = [
+  { value: 0.3, label: '極致通透 (30%)' },
+  { value: 0.6, label: '半透明 (60%)' },
+  { value: 0.85, label: '標準 (85%)' },
+  { value: 1.0, label: '不透明 (100%)' }
+]
+
+const isElectron = ref(typeof window !== 'undefined' && !!window.electronAPI?.setWindowOpacity)
+
 function triggerFileSelect() {
   if (fileInputRef.value) {
     fileInputRef.value.value = ''
@@ -222,10 +231,10 @@ function resetParameters() {
         </div>
       </div>
 
-      <!-- 2. 透明度调整 -->
+      <!-- 2. 背景透明度调整 -->
       <div class="setting-item">
         <div class="setting-label-with-hint">
-          <label>背景透明度</label>
+          <label>背景图片透明度</label>
           <span class="setting-hint">控制背景图片显现程度</span>
         </div>
         <div class="setting-value slider-value">
@@ -239,6 +248,60 @@ function resetParameters() {
             @input="themeStore.setCustomBgOpacity($event.target.value / 100)"
           >
           <span class="param-badge">{{ Math.round(themeStore.customBgOpacity * 100) }}%</span>
+        </div>
+      </div>
+
+      <!-- 2.1 界面透明度调整 -->
+      <div class="setting-item">
+        <div class="setting-label-with-hint">
+          <label>界面透明度</label>
+          <span class="setting-hint">控制侧边栏、播放栏与卡片面板透光度，让背景更通透</span>
+        </div>
+        <div class="setting-value slider-value">
+          <input
+            type="range"
+            min="10"
+            max="100"
+            step="1"
+            :value="Math.round((themeStore.uiOpacity ?? 0.85) * 100)"
+            class="param-slider"
+            @input="themeStore.setUiOpacity($event.target.value / 100)"
+          >
+          <span class="param-badge">{{ Math.round((themeStore.uiOpacity ?? 0.85) * 100) }}%</span>
+        </div>
+      </div>
+
+      <!-- 界面透明度快捷档位 -->
+      <div class="quick-preset-chips">
+        <button
+          v-for="op in UI_OPACITY_PRESETS"
+          :key="op.value"
+          type="button"
+          class="chip-btn"
+          :class="{ active: Math.round((themeStore.uiOpacity ?? 0.85) * 100) === Math.round(op.value * 100) }"
+          @click="themeStore.setUiOpacity(op.value)"
+        >
+          {{ op.label }}
+        </button>
+      </div>
+
+      <!-- 2.2 视窗整体透明度（仅 Electron 桌面端） -->
+      <div v-if="isElectron" class="setting-item">
+        <div class="setting-label-with-hint">
+          <label>桌面视窗透明度</label>
+          <span class="setting-hint">调节整个应用程序视窗透明度，可透出系统桌面壁纸</span>
+        </div>
+        <div class="setting-value slider-value">
+          <input
+            type="range"
+            min="30"
+            max="100"
+            step="1"
+            :value="Math.round((themeStore.windowOpacity ?? 1) * 100)"
+            class="param-slider"
+            @input="themeStore.setWindowOpacity($event.target.value / 100)"
+          >
+          <span class="param-badge">{{ Math.round((themeStore.windowOpacity ?? 1) * 100) }}%</span>
         </div>
       </div>
 
