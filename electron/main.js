@@ -2575,22 +2575,86 @@ function cleanLyricKeyword(raw) {
     .trim()
 }
 
+function generateLyricSearchCandidates(rawTitle, rawArtist) {
+  let title = String(rawTitle || '').replace(/<[^>]+>/g, '').trim();
+  let artist = String(rawArtist || '').replace(/<[^>]+>/g, '').trim();
+
+  // 1. 提取《...》中的书名号（最可靠的歌名标识）
+  const bookMatches = [...title.matchAll(/《([^》]+)》/g)].map(m => m[1].trim()).filter(Boolean);
+
+  // 2. 提取【歌手】歌名 或 【歌名】歌手
+  const bracketMatches = [...title.matchAll(/【([^】]+)】/g)].map(m => m[1].trim()).filter(Boolean);
+
+  // 3. 常见噪声标签与说明过滤
+  const noiseTagRegex = /【(?:4K|1080P|720P|60帧|60FPS|超清|修复|高清|无损|纯享|高音质|官方|MV|现场|完整版|精选|合集|单曲循环|Remix|动态歌词|自制|首发|伴奏|Live|LIVE|4K60帧|1080P60帧)[^】]*】/gi;
+  const noiseParenRegex = /\((?:4K|1080P|720P|60帧|60FPS|超清|修复|高清|无损|纯享|高音质|官方|MV|现场|完整版|单曲纯享|动态歌词|Live|LIVE|cover|Cover|翻唱|高码率)[^)]*\)/gi;
+  const noiseSquareRegex = /\[(?:4K|1080P|720P|60帧|60FPS|超清|修复|高清|无损|纯享|Live)[^\]]*\]/gi;
+  const noisePhraseRegex = /(?:这首歌的前奏一响|听一遍就爱上|百听不厌|终于找到了|太好听了|感动哭|千万别戴耳机听|建议戴耳机听)[^，！!？?~]*/g;
+
+  let cleaned = title
+    .replace(noiseTagRegex, ' ')
+    .replace(noiseParenRegex, ' ')
+    .replace(noiseSquareRegex, ' ')
+    .replace(noisePhraseRegex, ' ');
+
+  let stripped = cleaned
+    .replace(/[【】\[\]（）()《》<>「」『』·♪♫｜|~～]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const dashMatch = stripped.match(/^([^-–—/|｜]+)\s*[-–—/|｜]\s*([^-–—/|｜]+)(?:\s*[-–—/|｜].*)?$/);
+
+  const candidates = [];
+
+  if (bookMatches.length > 0) {
+    const bookTitle = bookMatches[0];
+    if (artist) candidates.push(`${bookTitle} ${artist}`);
+    for (const b of bracketMatches) {
+      if (b !== bookTitle && b.length <= 15) {
+        candidates.push(`${bookTitle} ${b}`);
+      }
+    }
+    candidates.push(bookTitle);
+  }
+
+  if (dashMatch) {
+    const p1 = dashMatch[1].trim();
+    const p2 = dashMatch[2].trim();
+    candidates.push(`${p1} ${p2}`);
+    candidates.push(`${p2} ${p1}`);
+    candidates.push(p2);
+    candidates.push(p1);
+  }
+
+  if (bracketMatches.length > 0) {
+    const b = bracketMatches[0];
+    const rest = stripped.replace(b, '').trim();
+    if (b && rest && b.length <= 15) {
+      candidates.push(`${rest} ${b}`);
+      candidates.push(`${b} ${rest}`);
+    }
+  }
+
+  if (stripped) {
+    if (artist && !stripped.includes(artist)) {
+      candidates.push(`${stripped} ${artist}`);
+    }
+    candidates.push(stripped);
+  }
+
+  if (title) {
+    candidates.push(title);
+  }
+
+  return [...new Set(candidates.filter(c => c && c.length >= 2))];
+}
+
 // 按歌名/歌手构造搜索关键词序列（多源共用）
 function buildLyricKeywords(title, artist) {
-  const cleanTitle = cleanLyricKeyword(title)
-  const cleanArtist = cleanLyricKeyword(artist)
-
-  const keywords = [];
-  if (cleanTitle && cleanArtist) {
-    keywords.push(`${cleanTitle} ${cleanArtist}`);
-  }
-  if (cleanTitle) {
-    keywords.push(cleanTitle);
-  }
-  // 兜底：原 title（万一清洗过头）
-  if (title && !keywords.includes(title)) keywords.push(title)
-
-  return { keywords, cleanTitle, cleanArtist }
+  const cleanTitle = cleanLyricKeyword(title);
+  const cleanArtist = cleanLyricKeyword(artist);
+  const candidates = generateLyricSearchCandidates(title, artist);
+  return { keywords: candidates, cleanTitle, cleanArtist };
 }
 
 // 从搜索结果里挑最佳匹配（原 get-lyric 的匹配逻辑，多源共用）
@@ -2670,7 +2734,7 @@ ipcMain.handle('get-lyric', async (event, { bvid, cid, title, artist, preferredS
 
     return {
       code: -1,
-      message: '未找到歌词'
+      message: '沒有歌詞'
     };
   } catch (error) {
     console.error('获取歌词失败:', error);
@@ -2730,7 +2794,7 @@ ipcMain.handle('get-lyric-by-id', async (event, song) => {
 
     return {
       code: -1,
-      message: '未找到歌词'
+      message: '沒有歌詞'
     };
   } catch (error) {
     console.error('获取歌词失败:', error);

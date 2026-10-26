@@ -264,17 +264,15 @@ async function loadFavResources() {
   isLoadingFavResources.value = true
   favSyncProgress.value = { stage: '', current: 0, total: 0, loaded: 0 }
   try {
-    // 参考 biu-master 的 getAllFavMedia：先 ids 一次拿全，再 infos 批量查
-    // 总进度按 media_count 估算，1 个 ids + ceil(N/50) 个 infos
     const totalHint = Number(currentPlaylist.value.media_count) || 0
-    const totalChunks = totalHint > 0 ? 1 + Math.ceil(totalHint / 50) : 1
+    const totalChunks = totalHint > 0 ? Math.ceil(totalHint / 20) : 1
     favSyncProgress.value = {
-      stage: 'ids',
+      stage: 'list',
       current: 0,
       total: totalChunks,
       loaded: 0
     }
-    const added = await userStore.loadAllFavoriteResources(
+    const result = await userStore.loadAllFavoriteResources(
       currentPlaylist.value,
       playlistStore,
       {
@@ -283,19 +281,25 @@ async function loadFavResources() {
         }
       }
     )
-    // 兜底 save：loadAllFavoriteResources 内部应该已经 save，但这里再 save 一次
-    // 防止它内部异常退出时已加载的 partial 数据没落盘
     try { await playlistStore.savePlaylists() } catch (_) {}
-    if (added === 0) {
-      const detail = userStore._lastFavError || '请稍后重试'
-      alert(`未拉取到新视频（${detail}）。可尝试重新登录 B 站后再试。`)
-    } else {
-      // 同步刷新 currentPlaylist 引用，让视图立即看到新歌曲
+
+    const added = typeof result === 'object' ? (result.added ?? 0) : Number(result) || 0
+    const loaded = typeof result === 'object' ? (result.loaded ?? 0) : added
+    const error = typeof result === 'object' ? (result.error || '') : (userStore._lastFavError || '')
+
+    if (error && loaded === 0) {
+      alert(`拉取收藏夹失败（${error}）。可尝试重新登录 B 站后再试。`)
+    } else if (added > 0) {
       currentPlaylist.value = playlistStore.userPlaylists.find(p => p.id === currentPlaylist.value.id) || currentPlaylist.value
+      alert(`成功加载 ${added} 首视频到本地歌单！`)
+    } else if (loaded > 0) {
+      currentPlaylist.value = playlistStore.userPlaylists.find(p => p.id === currentPlaylist.value.id) || currentPlaylist.value
+      alert('该收藏夹内容已是最新，无新增视频。')
+    } else {
+      alert('该收藏夹为空，暂无可加载的视频。')
     }
   } catch (error) {
     console.error('加载收藏夹内容失败:', error)
-    // 关键：异常退出时 partial 数据可能已在内存里；显式 save 一次兜底
     try { await playlistStore.savePlaylists() } catch (_) {}
     alert('加载失败：' + (error?.message || '未知错误'))
   } finally {
@@ -1224,7 +1228,7 @@ function updateBufferedProgress() {
 async function loadVideoSeries(bvid) {
   try {
     // 获取视频详细信息，包含合集信息
-    const result = await getWebInterfaceView({ bvid: bvid })
+    const result = await window.electronAPI.getMusicInfo(bvid)
     // 结果回来时当前曲已换成别的视频：整份丢弃，避免分P列表串台
     if (currentTrack.value?.bvid !== bvid) return
     if (result.code === 0 && result.data.pages && result.data.pages.length > 1) {
@@ -2743,7 +2747,7 @@ onUnmounted(() => {
                 >
                   <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M19 8l-4 4h3c0 3.31-2.69 6-6 6-1.01 0-1.97-.25-2.8-.7l-1.46 1.46C8.97 19.54 10.43 20 12 20c4.42 0 8-3.58 8-8h3l-4-4zM6 12c0-3.31 2.69-6 6-6 1.01 0 1.97.25 2.8.7l1.46-1.46C15.03 4.46 13.57 4 12 4c-4.42 0-8 3.58-8 8H1l4 4 4-4H6z"/></svg>
                   <span v-if="isLoadingFavResources">
-                    {{ favSyncProgress.stage === 'ids' ? '正在拉取清单' : `加载中 ${favSyncProgress.loaded}/${currentPlaylist?.media_count || favSyncProgress.loaded}` }}
+                    {{ `加载中 ${favSyncProgress.loaded}/${currentPlaylist?.media_count || favSyncProgress.loaded}` }}
                   </span>
                   <span v-else>加载视频</span>
                 </button>
@@ -2844,7 +2848,7 @@ onUnmounted(() => {
           <p>该收藏夹内的视频尚未加载到本地歌单</p>
           <button class="load-fav-btn" :disabled="isLoadingFavResources" @click="loadFavResources">
             <template v-if="isLoadingFavResources">
-              {{ favSyncProgress.stage === 'ids' ? '正在拉取清单' : `加载中 ${favSyncProgress.loaded}/${currentPlaylist?.media_count || favSyncProgress.loaded}` }}
+              {{ `加载中 ${favSyncProgress.loaded}/${currentPlaylist?.media_count || favSyncProgress.loaded}` }}
             </template>
             <template v-else>加载该收藏夹内的视频</template>
           </button>

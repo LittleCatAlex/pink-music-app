@@ -309,7 +309,7 @@ export const useUserStore = defineStore('user', {
         if (exists) return
         playlist.music.push({
           bvid: bvid || '',
-          cid: item.cid,
+          cid: item.cid || item.ugc?.first_cid,
           favId: item.id,
           favType: item.type,
           title: item.title,
@@ -328,76 +328,75 @@ export const useUserStore = defineStore('user', {
     },
 
     /**
-     * 拉取收藏夹全部内容（参考 biu-master 的 getAllFavMedia 策略：先 ids 一次性拿到全部 id，
-     * 再用 infos 按 50 个一组批量查详情）。相比对 /x/v3/fav/resource/list 分页循环，
-     * 这个方案只发 1 + N/50 次请求，更不容易被 B 站风控 -412 误伤。
-     * - onProgress({ stage, current, total, loaded }) 用于 UI 实时显示
-     *   stage: 'ids' | 'infos'
-     * - 返回本次新增歌曲数
+     * 拉取收藏夹全部内容：通过 /x/v3/fav/resource/list 分页拉取（每页 20 条）。
+     * - onProgress({ stage, current, total, loaded, totalCount }) 用于 UI 实时显示进度
+     * - 返回 { added, loaded, error }
      */
     async loadAllFavoriteResources(playlist, playlistStore, { onProgress } = {}) {
-      if (!playlist || !window.electronAPI) return 0
-      const id = playlist.id
-      if (!id || !id.startsWith('bili-fav-')) return 0
-      const mediaId = Number(id.replace('bili-fav-', ''))
-      if (!mediaId) return 0
-      this._lastFavError = ''
+      if (!playlist || !window.electronAPI) return { added: 0, loaded: 0, error: '缺少环境接口' };
+      const id = playlist.id;
+      if (!id || !id.startsWith('bili-fav-')) return { added: 0, loaded: 0, error: '非 B 站收藏夹' };
+      const mediaId = Number(id.replace('bili-fav-', ''));
+      if (!mediaId) return { added: 0, loaded: 0, error: '无效收藏夹 ID' };
+      this._lastFavError = '';
 
-      // 第一步：一次拿到所有 id
-      const idsRes = await window.electronAPI.getFavResourceIds(mediaId)
-      if (idsRes?.code !== 0) {
-        this._lastFavError = idsRes?.message || `code=${idsRes?.code}`
-        console.error('getFavResourceIds 失败:', this._lastFavError, 'mediaId=', mediaId)
-        return 0
-      }
-      const allIds = Array.isArray(idsRes.data) ? idsRes.data : []
-      if (allIds.length === 0) {
-        return 0
-      }
-      // 只保留视频稿件 (2) 和音频 (12)，提前过滤掉追更/电影/合集（type=21/24 等）
-      const validIds = allIds.filter(item => item && (item.type === 2 || item.type === 12))
-      if (validIds.length === 0) {
-        return 0
-      }
-      if (typeof onProgress === 'function') {
-        try { onProgress({ stage: 'ids', current: 1, total: 1, loaded: validIds.length }) } catch (_) {}
-      }
+      let page = 1;
+      let hasMore = true;
+      let totalLoaded = 0;
+      let totalAdded = 0;
+      let totalCount = playlist.media_count || 0;
 
-      // 第二步：按 50 一组批量查详情
-      const CHUNK_SIZE = 50
-      const chunks = []
-      for (let i = 0; i < validIds.length; i += CHUNK_SIZE) {
-        chunks.push(validIds.slice(i, i + CHUNK_SIZE))
-      }
-      const totalChunks = chunks.length
-      let loaded = 0
-      let added = 0
-      for (let i = 0; i < totalChunks; i++) {
-        const chunk = chunks[i]
-        const resources = chunk.map(item => `${item.id}:${item.type}`).join(',')
-        const infoRes = await window.electronAPI.getFavResourceInfos(resources)
-        if (infoRes?.code !== 0) {
-          // 单批失败：打日志但继续下一批，避免一颗老鼠屎坏了一锅汤
-          console.warn(`第 ${i + 1}/${totalChunks} 批 infos 拉取失败:`, infoRes?.message)
-          if (typeof onProgress === 'function') {
-            try { onProgress({ stage: 'infos', current: i + 1, total: totalChunks, loaded }) } catch (_) {}
-          }
-          continue
+      while (hasMore) {
+        const res = await window.electronAPI.getFavResourceList(mediaId, page, 20);
+        if (res?.code !== 0) {
+          this._lastFavError = res?.message || `code=${res?.code}`;
+          console.error(`getFavResourceList 第 ${page} 页失败:`, this._lastFavError, 'mediaId=', mediaId);
+          break;
         }
-        const infos = Array.isArray(infoRes.data) ? infoRes.data : []
-        loaded += infos.length
-        added += this._appendFavMedias(playlist, infos)
+
+        const data = res.data;
+        if (data?.info?.media_count !== undefined) {
+          totalCount = Number(data.info.media_count) || totalCount;
+          playlist.media_count = totalCount;
+        }
+
+        const medias = Array.isArray(data?.medias) ? data.medias : [];
+        if (medias.length === 0) {
+          break;
+        }
+
+        totalLoaded += medias.length;
+        totalAdded += this._appendFavMedias(playlist, medias);
+
+        const totalPages = Math.max(1, Math.ceil(totalCount / 20));
         if (typeof onProgress === 'function') {
-          try { onProgress({ stage: 'infos', current: i + 1, total: totalChunks, loaded }) } catch (_) {}
+          try {
+            onProgress({
+              stage: 'list',
+              current: page,
+              total: totalPages,
+              loaded: totalLoaded,
+              totalCount
+            });
+          } catch (_) {}
+        }
+
+        hasMore = !!data?.has_more && medias.length >= 20;
+        page++;
+
+        if (hasMore) {
+          await new Promise(r => setTimeout(r, 100));
         }
       }
 
-      if (added > 0 && playlistStore && typeof playlistStore.savePlaylists === 'function') {
-        try { await playlistStore.savePlaylists() } catch (e) {
-          console.warn('[loadAllFavoriteResources] save failed:', e.message)
+      if (totalAdded > 0 && playlistStore && typeof playlistStore.savePlaylists === 'function') {
+        try { await playlistStore.savePlaylists(); } catch (e) {
+          console.warn('[loadAllFavoriteResources] save failed:', e.message);
         }
       }
-      return added
-    }
+      return { added: totalAdded, loaded: totalLoaded, error: this._lastFavError };
+    },
+
+
   }
 })
