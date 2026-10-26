@@ -85,6 +85,15 @@ export default defineConfig({
     }
   },
   server: {
+    watch: {
+      ignored: [
+        '**/screenshots/**',
+        '**/release/**',
+        '**/dist/**',
+        '**/.git/**',
+        '**/node_modules/**'
+      ]
+    },
     proxy: {
       '/api': {
         target: 'https://api.bilibili.com',
