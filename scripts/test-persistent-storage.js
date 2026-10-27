@@ -70,7 +70,37 @@ storageMock.setItem('pink-music-settings', JSON.stringify(defaultSettings));
 const retrievedSettings = JSON.parse(storageMock.getItem('pink-music-settings'));
 assert.strictEqual(retrievedSettings.lyricPreferredSource, 'bilibili', 'Default lyric source should be bilibili');
 
-console.log('✓ Settings lyricPreferredSource default verified.');
+(async () => {
+  const { defineSchema, s } = await import('../src/utils/schema.js');
+  const schema = defineSchema({
+    version: 14,
+    fields: {
+      lyricPreferredSource: s.enum(['bilibili', 'kugou', 'netease'], 'bilibili')
+    },
+    migrations: {
+      11: (data) => ({ ...data, lyricPreferredSource: data.lyricPreferredSource === 'netease' ? 'netease' : 'kugou' }),
+      12: (data) => ({ ...data, lyricPreferredSource: data.lyricPreferredSource === 'netease' ? 'netease' : 'kugou' }),
+      14: (data) => ({ ...data, lyricPreferredSource: data.lyricPreferredSource === 'netease' ? 'netease' : 'bilibili' })
+    }
+  });
 
-console.log('[test:storage] All persistent storage tests passed!');
-process.exit(0);
+  // Legacy unversioned kugou upgrades to bilibili
+  const legacyKugou = schema.parse({ lyricPreferredSource: 'kugou' });
+  assert.strictEqual(legacyKugou.lyricPreferredSource, 'bilibili');
+  assert.strictEqual(legacyKugou._schemaVersion, 14);
+
+  // Legacy unversioned netease preserved
+  const legacyNetease = schema.parse({ lyricPreferredSource: 'netease' });
+  assert.strictEqual(legacyNetease.lyricPreferredSource, 'netease');
+
+  // Explicit v14 kugou preserved
+  const explicitKugou = schema.parse({ lyricPreferredSource: 'kugou', _schemaVersion: 14 });
+  assert.strictEqual(explicitKugou.lyricPreferredSource, 'kugou');
+
+  console.log('✓ Settings schema migration for lyricPreferredSource verified.');
+  console.log('[test:storage] All persistent storage tests passed!');
+  process.exit(0);
+})().catch(err => {
+  console.error('[test:storage] Failed:', err);
+  process.exit(1);
+});

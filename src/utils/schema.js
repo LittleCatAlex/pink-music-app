@@ -225,7 +225,16 @@ function defineSchema({ version, fields, migrations = {} }) {
       }
       // 2) 如果 raw 带 _schemaVersion 字段，用它；否则认为是当前版本
       let data
-      const fromVersion = rawVersion || raw._schemaVersion || version
+      let fromVersion
+      if (typeof rawVersion === 'number') {
+        fromVersion = rawVersion
+      } else if (typeof raw._schemaVersion === 'number') {
+        fromVersion = raw._schemaVersion
+      } else if (raw && typeof raw === 'object' && Object.keys(raw).length > 0) {
+        fromVersion = 1
+      } else {
+        fromVersion = version
+      }
       if (fromVersion === version) {
         data = raw
       } else {
@@ -247,11 +256,12 @@ function defineSchema({ version, fields, migrations = {} }) {
               console.warn(`[schema] 迁移 v${v} → v${v + 1} 失败:`, e.message, '— 保留原数据，按当前 schema 校验')
               migrationBroken = true
               break
+  
             }
           } else {
-            console.warn(`[schema] 缺少迁移 v${v} → v${v + 1}，保留原数据按当前 schema 校验`)
-            migrationBroken = true
-            break
+            console.log(`[schema] 跳过空迁移 v${v} → v${v + 1}`)
+            // 无单独数据迁移函数时跳过并继续后续迁移
+
           }
         }
         if (migrationBroken) {

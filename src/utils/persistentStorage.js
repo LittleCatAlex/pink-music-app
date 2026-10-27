@@ -202,7 +202,7 @@ export function createPersistentStorage(storeKey, options = {}) {
      */
     peek(defaultValue = null) {
       const local = readLocalJson(storeKey)
-      return local !== null ? local : defaultValue
+      return local !== null ? applySchema(local) : defaultValue
     },
 
     /**
@@ -257,6 +257,11 @@ export function createPersistentStorage(storeKey, options = {}) {
       // 否则主存储写入会抛 "An object could not be cloned."（settings/player 长期丢数据的根因）
       try { value = JSON.parse(JSON.stringify(value)) } catch (e) {
         console.warn(`[persistentStorage] save ${storeKey} 深拷贝失败:`, e.message)
+      }
+      if (schema && typeof schema.version === 'number' && typeof value === 'object' && value !== null) {
+        if (!('_schemaVersion' in value)) {
+          value._schemaVersion = schema.version
+        }
       }
       // localStorage 走 debounce（200ms 内合并 + 值未变跳过）
       const localWritten = writeLocalJsonDebouncedOrNow(storeKey, value, debounceMs)

@@ -71,6 +71,10 @@ const settingsSchema = defineSchema({
       ...data,
       lyricPreferredSource: data.lyricPreferredSource === 'netease' ? 'netease' : 'kugou'
     }),
+    12: (data) => ({
+      ...data,
+      lyricPreferredSource: data.lyricPreferredSource === 'netease' ? 'netease' : 'kugou'
+    }),
     // v12 → v13：补桌面歌词高对比模式默认值（默认关闭，保持既有视觉）
     // 注意：loader 按 migrations[目标版本] 取迁移函数（见 utils/schema.js），v12→v13 对应 key 13
     13: (data) => ({ ...data, desktopLyricsHighContrast: data.desktopLyricsHighContrast ?? false }),
