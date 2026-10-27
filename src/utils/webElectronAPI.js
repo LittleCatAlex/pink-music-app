@@ -1,75 +1,10 @@
-function generateLyricSearchCandidates(rawTitle, rawArtist) {
-  let title = String(rawTitle || '').replace(/<[^>]+>/g, '').trim();
-  let artist = String(rawArtist || '').replace(/<[^>]+>/g, '').trim();
-
-  // 1. 提取《...》中的书名号（最可靠的歌名标识）
-  const bookMatches = [...title.matchAll(/《([^》]+)》/g)].map(m => m[1].trim()).filter(Boolean);
-
-  // 2. 提取【歌手】歌名 或 【歌名】歌手
-  const bracketMatches = [...title.matchAll(/【([^】]+)】/g)].map(m => m[1].trim()).filter(Boolean);
-
-  // 3. 常见噪声标签与说明过滤
-  const noiseTagRegex = /【(?:4K|1080P|720P|60帧|60FPS|超清|修复|高清|无损|纯享|高音质|官方|MV|现场|完整版|精选|合集|单曲循环|Remix|动态歌词|自制|首发|伴奏|Live|LIVE|4K60帧|1080P60帧)[^】]*】/gi;
-  const noiseParenRegex = /\((?:4K|1080P|720P|60帧|60FPS|超清|修复|高清|无损|纯享|高音质|官方|MV|现场|完整版|单曲纯享|动态歌词|Live|LIVE|cover|Cover|翻唱|高码率)[^)]*\)/gi;
-  const noiseSquareRegex = /\[(?:4K|1080P|720P|60帧|60FPS|超清|修复|高清|无损|纯享|Live)[^\]]*\]/gi;
-  const noisePhraseRegex = /(?:这首歌的前奏一响|听一遍就爱上|百听不厌|终于找到了|太好听了|感动哭|千万别戴耳机听|建议戴耳机听)[^，！!？?~]*/g;
-
-  let cleaned = title
-    .replace(noiseTagRegex, ' ')
-    .replace(noiseParenRegex, ' ')
-    .replace(noiseSquareRegex, ' ')
-    .replace(noisePhraseRegex, ' ');
-
-  let stripped = cleaned
-    .replace(/[【】\[\]（）()《》<>「」『』·♪♫｜|~～]/g, ' ')
+function cleanLyricKeyword(raw) {
+  return String(raw || '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/[【】\[\]（）()《》<>「」『』]/g, ' ')
+    .replace(/·|♪|♫|｜|\||~|～/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
-
-  const dashMatch = stripped.match(/^([^-–—/|｜]+)\s*[-–—/|｜]\s*([^-–—/|｜]+)(?:\s*[-–—/|｜].*)?$/);
-
-  const candidates = [];
-
-  if (bookMatches.length > 0) {
-    const bookTitle = bookMatches[0];
-    if (artist) candidates.push(`${bookTitle} ${artist}`);
-    for (const b of bracketMatches) {
-      if (b !== bookTitle && b.length <= 15) {
-        candidates.push(`${bookTitle} ${b}`);
-      }
-    }
-    candidates.push(bookTitle);
-  }
-
-  if (dashMatch) {
-    const p1 = dashMatch[1].trim();
-    const p2 = dashMatch[2].trim();
-    candidates.push(`${p1} ${p2}`);
-    candidates.push(`${p2} ${p1}`);
-    candidates.push(p2);
-    candidates.push(p1);
-  }
-
-  if (bracketMatches.length > 0) {
-    const b = bracketMatches[0];
-    const rest = stripped.replace(b, '').trim();
-    if (b && rest && b.length <= 15) {
-      candidates.push(`${rest} ${b}`);
-      candidates.push(`${b} ${rest}`);
-    }
-  }
-
-  if (stripped) {
-    if (artist && !stripped.includes(artist)) {
-      candidates.push(`${stripped} ${artist}`);
-    }
-    candidates.push(stripped);
-  }
-
-  if (title) {
-    candidates.push(title);
-  }
-
-  return [...new Set(candidates.filter(c => c && c.length >= 2))];
 }
 
 /**
@@ -444,19 +379,51 @@ export function setupWebElectronAPI() {
 
     async getLyric({ bvid, cid, title, artist, preferredSource }) {
       try {
-        // 若提供了 bvid，且 preferredSource 为 bilibili 或未指定，优先尝试从 B 站获取 CC 字幕
+        // 若提供了 bvid，且 preferredSource 为 bilibili 或未指定，优先尝试从 B 站获取 CC 字幕（多接口 + 重试）
         if (bvid && (preferredSource === 'bilibili' || !preferredSource)) {
-          try {
-            let targetCid = cid;
-            if (!targetCid) {
-              const pageRes = await requestApi(`/api/x/player/pagelist?bvid=${encodeURIComponent(bvid)}`);
-              if (pageRes?.code === 0 && Array.isArray(pageRes.data) && pageRes.data.length > 0) {
-                targetCid = pageRes.data[0].cid;
+          for (let attempt = 0; attempt < 2; attempt++) {
+            try {
+              let targetCid = cid;
+              if (!targetCid || targetCid <= 1) {
+                const pageRes = await requestApi(`/api/x/player/pagelist?bvid=${encodeURIComponent(bvid)}`);
+                if (pageRes?.code === 0 && Array.isArray(pageRes.data) && pageRes.data.length > 0) {
+                  targetCid = pageRes.data[0].cid;
+                }
               }
-            }
-            if (targetCid) {
-              const subRes = await requestApi(`/api/x/player/wbi/v2?bvid=${encodeURIComponent(bvid)}&cid=${encodeURIComponent(targetCid)}`);
-              const subtitles = subRes?.data?.subtitle?.subtitles;
+
+              let subtitles = null;
+
+              // 1. 尝试 /api/x/player/wbi/v2
+              if (targetCid && targetCid > 1) {
+                try {
+                  const subRes = await requestApi(`/api/x/player/wbi/v2?bvid=${encodeURIComponent(bvid)}&cid=${encodeURIComponent(targetCid)}`);
+                  if (Array.isArray(subRes?.data?.subtitle?.subtitles) && subRes.data.subtitle.subtitles.length > 0) {
+                    subtitles = subRes.data.subtitle.subtitles;
+                  }
+                } catch (_) {}
+              }
+
+              // 2. 尝试 /api/x/player/v2
+              if (!subtitles && targetCid && targetCid > 1) {
+                try {
+                  const subResV2 = await requestApi(`/api/x/player/v2?bvid=${encodeURIComponent(bvid)}&cid=${encodeURIComponent(targetCid)}`);
+                  if (Array.isArray(subResV2?.data?.subtitle?.subtitles) && subResV2.data.subtitle.subtitles.length > 0) {
+                    subtitles = subResV2.data.subtitle.subtitles;
+                  }
+                } catch (_) {}
+              }
+
+              // 3. 兜底 /api/x/web-interface/view
+              if (!subtitles) {
+                try {
+                  const viewRes = await requestApi(`/api/x/web-interface/view?bvid=${encodeURIComponent(bvid)}`);
+                  const viewList = viewRes?.data?.subtitle?.list || viewRes?.data?.subtitle?.subtitles;
+                  if (Array.isArray(viewList) && viewList.length > 0) {
+                    subtitles = viewList;
+                  }
+                } catch (_) {}
+              }
+
               if (Array.isArray(subtitles) && subtitles.length > 0) {
                 const isZh = (s) => (s.lan || '').toLowerCase().startsWith('zh') || (s.lan_doc || '').includes('中');
                 const manual = subtitles.filter(s => s.ai_type === 0 || s.type === 0);
@@ -464,8 +431,16 @@ export function setupWebElectronAPI() {
                 const main = manual.find(isZh) || manual[0] || ai.find(isZh) || ai[0];
                 if (main && main.subtitle_url) {
                   const url = main.subtitle_url.startsWith('//') ? `https:${main.subtitle_url}` : main.subtitle_url;
-                  const res = await fetch(url);
-                  const data = await res.json();
+                  let data = null;
+                  for (let fetchTry = 0; fetchTry < 2; fetchTry++) {
+                    try {
+                      const res = await fetch(url);
+                      data = await res.json();
+                      if (data?.body) break;
+                    } catch (_) {
+                      await new Promise(r => setTimeout(r, 400));
+                    }
+                  }
                   if (data && Array.isArray(data.body) && data.body.length > 0) {
                     const lines = [];
                     for (const item of data.body) {
@@ -484,18 +459,55 @@ export function setupWebElectronAPI() {
                   }
                 }
               }
+              if (attempt === 0) await new Promise(r => setTimeout(r, 500));
+            } catch (e) {
+              console.warn('[Web] 获取 B 站 CC 字幕失败 (attempt ' + (attempt + 1) + '):', e.message);
+              if (attempt === 0) await new Promise(r => setTimeout(r, 500));
             }
-          } catch (e) {
-            console.warn('[Web] 获取 B 站 CC 字幕失败，回退其他源:', e.message);
           }
         }
 
-        const candidates = generateLyricSearchCandidates(title, artist);
-        for (const candidate of candidates) {
-          const searchRes = await this.searchLyric(candidate);
+        // 恢复原本严格搜索方式（仅按歌名与歌手组合，严格校验匹配）
+        const cleanTitle = cleanLyricKeyword(title);
+        const cleanArtist = cleanLyricKeyword(artist);
+        const queries = [];
+        if (cleanTitle && cleanArtist) queries.push(`${cleanTitle} ${cleanArtist}`);
+        if (cleanTitle) queries.push(cleanTitle);
+        if (title && !queries.includes(title)) queries.push(title);
+
+        for (const q of queries) {
+          const searchRes = await this.searchLyric(q);
           if (searchRes.code === 0 && Array.isArray(searchRes.data) && searchRes.data.length > 0) {
-            for (const song of searchRes.data.slice(0, 3)) {
-              const lyricRes = await this.getLyricById(song);
+            let matchedSong = null;
+            if (cleanArtist) {
+              const artistMain = cleanArtist.split(/[、,，&/\\\s]+/)[0].trim().toLowerCase();
+              matchedSong = searchRes.data.find(s => {
+                const sArtist = (s.artist || '').toLowerCase();
+                const sName = (s.name || '').toLowerCase();
+                return (artistMain && sArtist.includes(artistMain)) || (cleanTitle && sName === cleanTitle.toLowerCase());
+              });
+            }
+            if (!matchedSong && cleanTitle) {
+              const t = cleanTitle.toLowerCase();
+              matchedSong = searchRes.data.find(s => {
+                const sName = (s.name || '').toLowerCase();
+                return sName === t || sName.includes(t) || t.includes(sName);
+              });
+            }
+            // 严格校验：若未匹配歌手或歌名，检查首条结果是否包含歌名或歌手核心词
+            if (!matchedSong && searchRes.data[0]) {
+              const first = searchRes.data[0];
+              const sName = (first.name || '').toLowerCase();
+              const sArtist = (first.artist || '').toLowerCase();
+              const t = (cleanTitle || '').toLowerCase();
+              const a = (cleanArtist || '').toLowerCase();
+              if ((t && (sName.includes(t) || t.includes(sName))) || (a && (sArtist.includes(a) || a.includes(sArtist)))) {
+                matchedSong = first;
+              }
+            }
+
+            if (matchedSong) {
+              const lyricRes = await this.getLyricById(matchedSong);
               if (lyricRes.code === 0 && lyricRes.data?.lrc) {
                 return lyricRes;
               }

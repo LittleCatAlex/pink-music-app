@@ -99,5 +99,92 @@ assert.strictEqual(pickedAi.trans, null);
 
 console.log('✓ Subtitle priority and translation selection tests passed.');
 
+// Test 5: Strict keyword building & relevance matching
+function cleanLyricKeyword(raw) {
+  return String(raw || '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/[【】\[\]（）()《》<>「」『』]/g, ' ')
+    .replace(/·|♪|♫|｜|\||~|～/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function buildLyricKeywords(title, artist) {
+  const cleanTitle = cleanLyricKeyword(title);
+  const cleanArtist = cleanLyricKeyword(artist);
+
+  const keywords = [];
+  if (cleanTitle && cleanArtist) {
+    keywords.push(`${cleanTitle} ${cleanArtist}`);
+  }
+  if (cleanTitle) {
+    keywords.push(cleanTitle);
+  }
+  if (title && !keywords.includes(title)) {
+    keywords.push(title);
+  }
+
+  return { keywords, cleanTitle, cleanArtist };
+}
+
+function pickBestMatch(allResults, cleanTitle, cleanArtist) {
+  if (!allResults || !allResults.length) return null;
+
+  let matchedSong = null;
+
+  if (cleanArtist) {
+    const artistMain = cleanArtist.split(/[、,，&/\\\s]+/)[0].trim().toLowerCase();
+    matchedSong = allResults.find(song => {
+      const sArtist = (song.artist || '').toLowerCase();
+      const sName = (song.name || '').toLowerCase();
+      return (artistMain && sArtist.includes(artistMain)) ||
+             (cleanTitle && sName === cleanTitle.toLowerCase());
+    });
+  }
+
+  if (!matchedSong && cleanTitle) {
+    const t = cleanTitle.toLowerCase();
+    matchedSong = allResults.find(song => {
+      const sName = (song.name || '').toLowerCase();
+      return sName === t || sName.includes(t) || t.includes(sName);
+    });
+  }
+
+  if (!matchedSong && allResults[0]) {
+    const first = allResults[0];
+    const sName = (first.name || '').toLowerCase();
+    const sArtist = (first.artist || '').toLowerCase();
+    const t = (cleanTitle || '').toLowerCase();
+    const a = (cleanArtist || '').toLowerCase();
+    if ((t && (sName.includes(t) || t.includes(sName))) || (a && (sArtist.includes(a) || a.includes(sArtist)))) {
+      matchedSong = first;
+    }
+  }
+
+  return matchedSong || null;
+}
+
+const kw = buildLyricKeywords('晴天', '周杰伦');
+assert.ok(kw.keywords.includes('晴天 周杰伦'));
+assert.ok(kw.keywords.includes('晴天'));
+assert.strictEqual(kw.keywords.length, 2); // No fragmented noise candidates
+
+// Test strict matching vs unrelated results
+const searchResults = [
+  { id: '100', name: '完全不相干的歌曲', artist: '陌生歌手' },
+  { id: '101', name: '另一首不相干的歌', artist: '路人' }
+];
+const matchUnrelated = pickBestMatch(searchResults, '晴天', '周杰伦');
+assert.strictEqual(matchUnrelated, null, 'Unrelated songs must return null instead of blindly picking searchResults[0]');
+
+const searchWithMatch = [
+  { id: '200', name: '晴天', artist: '周杰伦' },
+  { id: '201', name: '晴天 (伴奏)', artist: '周杰伦' }
+];
+const matchRelated = pickBestMatch(searchWithMatch, '晴天', '周杰伦');
+assert.strictEqual(matchRelated.id, '200', 'Should match exact song');
+
+console.log('✓ Strict keyword generation and relevance matching tests passed.');
+
 console.log('[test:subtitle] All Bilibili CC subtitle tests passed!');
 process.exit(0);

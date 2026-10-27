@@ -65,116 +65,177 @@ function pickSubtitles(subtitles) {
 }
 
 /**
- * 下载并解析字幕 JSON
+ * 下载并解析字幕 JSON（支持超时重试与指数避退）
  * @param {string} subtitleUrl
+ * @param {number} [retries=2]
+ * @param {number} [delayMs=500]
  * @returns {Promise<Array<object>|null>}
  */
-async function fetchSubtitleBody(subtitleUrl) {
+async function fetchSubtitleBody(subtitleUrl, retries = 2, delayMs = 500) {
   if (!subtitleUrl) return null;
   const url = subtitleUrl.startsWith('//') ? `https:${subtitleUrl}` : subtitleUrl;
-  try {
-    const res = await axios.get(url, {
-      timeout: 10000,
-      headers: {
-        'User-Agent': BROWSER_UA
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const res = await axios.get(url, {
+        timeout: 15000,
+        headers: {
+          'User-Agent': BROWSER_UA
+        }
+      });
+      if (res.data && Array.isArray(res.data.body)) {
+        return res.data.body;
       }
-    });
-    if (res.data && Array.isArray(res.data.body)) {
-      return res.data.body;
+      return null;
+    } catch (err) {
+      if (attempt < retries) {
+        await new Promise(r => setTimeout(r, delayMs * (attempt + 1)));
+      } else {
+        console.error('下载 B 站 CC 字幕失败:', url, err.message);
+      }
     }
-    return null;
-  } catch (err) {
-    console.error('下载 B 站 CC 字幕失败:', url, err.message);
-    return null;
   }
+  return null;
 }
 
 /**
  * 获取 B 站 CC 字幕并转换为 { lrc, rv, tv }
+ * 包含多接口回退（wbi/v2 -> player/v2 -> view）以及失败自动重试，
+ * 防止因首次网络延迟或高并发请求而误回退到其他歌词源。
+ *
  * @param {string} bvid
  * @param {number|string} [cid]
  * @param {object} [bilibiliAPI] 可选的 BilibiliAPI 实例
+ * @param {number} [maxAttempts=2]
  * @returns {Promise<{ lrc: string, rv: string, tv: string }|null>}
  */
-async function getBilibiliSubtitle(bvid, cid, bilibiliAPI) {
+async function getBilibiliSubtitle(bvid, cid, bilibiliAPI, maxAttempts = 2) {
   if (!bvid) return null;
-  try {
-    let targetCid = cid;
-    // 如果没有 cid，尝试通过 pagelist 获取第一 P 的 cid
-    if (!targetCid) {
-      if (bilibiliAPI && typeof bilibiliAPI.getVideoEpisodes === 'function') {
-        const ep = await bilibiliAPI.getVideoEpisodes(bvid);
-        if (ep?.code === 0 && Array.isArray(ep.data) && ep.data.length > 0) {
-          targetCid = ep.data[0].cid;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      let targetCid = cid;
+      // 如果没有 cid，尝试通过 pagelist 或 episodes 获取第一 P 的 cid
+      if (!targetCid) {
+        if (bilibiliAPI && typeof bilibiliAPI.getVideoEpisodes === 'function') {
+          try {
+            const ep = await bilibiliAPI.getVideoEpisodes(bvid);
+            if (ep?.code === 0 && Array.isArray(ep.data) && ep.data.length > 0) {
+              targetCid = ep.data[0].cid;
+            }
+          } catch (_) {}
         }
-      } else {
-        const res = await axios.get(`https://api.bilibili.com/x/player/pagelist?bvid=${encodeURIComponent(bvid)}`, {
-          timeout: 10000,
-          headers: { 'User-Agent': BROWSER_UA }
-        });
-        if (res.data?.code === 0 && Array.isArray(res.data.data) && res.data.data.length > 0) {
-          targetCid = res.data.data[0].cid;
+        if (!targetCid) {
+          try {
+            const res = await axios.get(`https://api.bilibili.com/x/player/pagelist?bvid=${encodeURIComponent(bvid)}`, {
+              timeout: 12000,
+              headers: { 'User-Agent': BROWSER_UA }
+            });
+            if (res.data?.code === 0 && Array.isArray(res.data.data) && res.data.data.length > 0) {
+              targetCid = res.data.data[0].cid;
+            }
+          } catch (_) {}
         }
       }
-    }
 
-    if (!targetCid) {
-      return null;
-    }
+      let subtitleData = null;
 
-    let subtitleData = null;
-    if (bilibiliAPI && typeof bilibiliAPI.getVideoSubtitles === 'function') {
-      const res = await bilibiliAPI.getVideoSubtitles(bvid, targetCid);
-      if (res?.code === 0 && res.data?.subtitles) {
-        subtitleData = res.data.subtitles;
+      // 1. 优先通过主进程 bilibiliAPI 获取
+      if (bilibiliAPI && typeof bilibiliAPI.getVideoSubtitles === 'function' && targetCid) {
+        try {
+          const res = await bilibiliAPI.getVideoSubtitles(bvid, targetCid);
+          if (res?.code === 0 && Array.isArray(res.data?.subtitles) && res.data.subtitles.length > 0) {
+            subtitleData = res.data.subtitles;
+          }
+        } catch (_) {}
       }
-    } else {
-      // 直连请求 B 站播放器 v2 接口
-      const res = await axios.get(`https://api.bilibili.com/x/player/wbi/v2?bvid=${encodeURIComponent(bvid)}&cid=${encodeURIComponent(targetCid)}`, {
-        timeout: 10000,
-        headers: {
-          'User-Agent': BROWSER_UA,
-          'Referer': `https://www.bilibili.com/video/${bvid}`
+
+      // 2. 若 bilibiliAPI 未取到或不可用，直连请求 B 站播放器 v2 接口（先尝试 wbi/v2，再尝试 v2）
+      if (!subtitleData && targetCid) {
+        try {
+          const res = await axios.get(`https://api.bilibili.com/x/player/wbi/v2?bvid=${encodeURIComponent(bvid)}&cid=${encodeURIComponent(targetCid)}`, {
+            timeout: 12000,
+            headers: {
+              'User-Agent': BROWSER_UA,
+              'Referer': `https://www.bilibili.com/video/${bvid}`
+            }
+          });
+          const subs = res.data?.data?.subtitle?.subtitles;
+          if (Array.isArray(subs) && subs.length > 0) {
+            subtitleData = subs;
+          }
+        } catch (_) {}
+      }
+
+      if (!subtitleData && targetCid) {
+        try {
+          const resV2 = await axios.get(`https://api.bilibili.com/x/player/v2?bvid=${encodeURIComponent(bvid)}&cid=${encodeURIComponent(targetCid)}`, {
+            timeout: 12000,
+            headers: {
+              'User-Agent': BROWSER_UA,
+              'Referer': `https://www.bilibili.com/video/${bvid}`
+            }
+          });
+          const subsV2 = resV2.data?.data?.subtitle?.subtitles;
+          if (Array.isArray(subsV2) && subsV2.length > 0) {
+            subtitleData = subsV2;
+          }
+        } catch (_) {}
+      }
+
+      // 3. 兜底尝试 /x/web-interface/view
+      if (!subtitleData) {
+        try {
+          const viewRes = await axios.get(`https://api.bilibili.com/x/web-interface/view?bvid=${encodeURIComponent(bvid)}`, {
+            timeout: 12000,
+            headers: {
+              'User-Agent': BROWSER_UA,
+              'Referer': `https://www.bilibili.com/video/${bvid}`
+            }
+          });
+          const viewSubs = viewRes.data?.data?.subtitle?.list || viewRes.data?.data?.subtitle?.subtitles;
+          if (Array.isArray(viewSubs) && viewSubs.length > 0) {
+            subtitleData = viewSubs;
+          }
+        } catch (_) {}
+      }
+
+      if (Array.isArray(subtitleData) && subtitleData.length > 0) {
+        const { main, trans } = pickSubtitles(subtitleData);
+        if (main && main.subtitle_url) {
+          const mainBody = await fetchSubtitleBody(main.subtitle_url);
+          if (mainBody && mainBody.length > 0) {
+            const lrc = convertBiliSubtitleToLrc(mainBody);
+            if (lrc) {
+              let tv = '';
+              if (trans && trans.subtitle_url) {
+                const transBody = await fetchSubtitleBody(trans.subtitle_url);
+                if (transBody && transBody.length > 0) {
+                  tv = convertBiliSubtitleToLrc(transBody);
+                }
+              }
+              return { lrc, rv: '', tv };
+            }
+          }
         }
-      });
-      subtitleData = res.data?.data?.subtitle?.subtitles;
-    }
+      }
 
-    if (!Array.isArray(subtitleData) || subtitleData.length === 0) {
-      return null;
-    }
-
-    const { main, trans } = pickSubtitles(subtitleData);
-    if (!main || !main.subtitle_url) {
-      return null;
-    }
-
-    const mainBody = await fetchSubtitleBody(main.subtitle_url);
-    if (!mainBody || mainBody.length === 0) {
-      return null;
-    }
-
-    const lrc = convertBiliSubtitleToLrc(mainBody);
-    if (!lrc) return null;
-
-    let tv = '';
-    if (trans && trans.subtitle_url) {
-      const transBody = await fetchSubtitleBody(trans.subtitle_url);
-      if (transBody && transBody.length > 0) {
-        tv = convertBiliSubtitleToLrc(transBody);
+      // 若首次尝试失败，在重试前等待短暂避退
+      if (attempt < maxAttempts - 1) {
+        await new Promise(r => setTimeout(r, 600));
+      }
+    } catch (error) {
+      console.error('获取 B 站 CC 字幕异常 (attempt ' + (attempt + 1) + '):', bvid, cid, error.message);
+      if (attempt < maxAttempts - 1) {
+        await new Promise(r => setTimeout(r, 600));
       }
     }
-
-    return { lrc, rv: '', tv };
-  } catch (error) {
-    console.error('获取 B 站 CC 字幕异常:', bvid, cid, error.message);
-    return null;
   }
+  return null;
 }
 
 module.exports = {
   getBilibiliSubtitle,
   convertBiliSubtitleToLrc,
   formatLrcTimestamp,
-  pickSubtitles
+  pickSubtitles,
+  fetchSubtitleBody
 };

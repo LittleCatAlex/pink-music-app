@@ -231,7 +231,8 @@ class BilibiliAPI {
           config.headers.Cookie = cookieHeader;
         }
         // 路径匹配 fav 系列：自动加 wbi 签名
-        if (config.url && config.url.includes('/x/v3/fav/')) {
+        // 路径匹配 fav 系列或 wbi 系列：自动加 wbi 签名
+        if (config.url && (config.url.includes('/x/v3/fav/') || config.url.includes('/wbi/'))) {
           config.params = config.params || {};
           config.params = wbiSignParams(config.params, wbiKeysCache.imgKey, wbiKeysCache.subKey);
         }
@@ -412,15 +413,52 @@ class BilibiliAPI {
       }
       if (!targetCid) return { code: -1, message: '缺少 cid' };
 
-      const data = await this.request(`${BILIBILI_BASE}/x/player/wbi/v2`, {
-        params: { bvid, cid: targetCid }
-      });
-
-      const subtitles = data?.data?.subtitle?.subtitles;
-      if (!Array.isArray(subtitles) || subtitles.length === 0) {
-        return { code: 0, data: { subtitles: [] } };
+      // 1. 优先请求 /x/player/wbi/v2（带重试与 15s 超时）
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const data = await this.request(`${BILIBILI_BASE}/x/player/wbi/v2`, {
+            params: { bvid, cid: targetCid },
+            timeout: 15000
+          });
+          const subtitles = data?.data?.subtitle?.subtitles;
+          if (Array.isArray(subtitles) && subtitles.length > 0) {
+            return { code: 0, data: { subtitles } };
+          }
+        } catch (e) {
+          dlog('[getVideoSubtitles] wbi/v2 尝试失败:', e.message);
+        }
+        if (attempt === 0) await new Promise(r => setTimeout(r, 400));
       }
-      return { code: 0, data: { subtitles } };
+
+      // 2. 回退请求 /x/player/v2（无需 wbi 签名）
+      try {
+        const dataV2 = await this.request(`${BILIBILI_BASE}/x/player/v2`, {
+          params: { bvid, cid: targetCid },
+          timeout: 15000
+        });
+        const subtitlesV2 = dataV2?.data?.subtitle?.subtitles;
+        if (Array.isArray(subtitlesV2) && subtitlesV2.length > 0) {
+          return { code: 0, data: { subtitles: subtitlesV2 } };
+        }
+      } catch (e) {
+        dlog('[getVideoSubtitles] player/v2 尝试失败:', e.message);
+      }
+
+      // 3. 兜底请求 /x/web-interface/view
+      try {
+        const viewData = await this.request(`${BILIBILI_BASE}/x/web-interface/view`, {
+          params: { bvid },
+          timeout: 15000
+        });
+        const viewSubs = viewData?.data?.subtitle?.list || viewData?.data?.subtitle?.subtitles;
+        if (Array.isArray(viewSubs) && viewSubs.length > 0) {
+          return { code: 0, data: { subtitles: viewSubs } };
+        }
+      } catch (e) {
+        dlog('[getVideoSubtitles] view 尝试失败:', e.message);
+      }
+
+      return { code: 0, data: { subtitles: [] } };
     } catch (error) {
       console.error('获取视频字幕失败:', error.message);
       return { code: -1, message: error.message };
@@ -2631,117 +2669,69 @@ async function getNeteaseLyric(songId) {
 function cleanLyricKeyword(raw) {
   return String(raw || '')
     .replace(/<[^>]+>/g, '')
-    .replace(/[【】\[\]（）()《》<>]/g, ' ')
-    .replace(/·|♪|♫|｜|\||【|】/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
-function generateLyricSearchCandidates(rawTitle, rawArtist) {
-  let title = String(rawTitle || '').replace(/<[^>]+>/g, '').trim();
-  let artist = String(rawArtist || '').replace(/<[^>]+>/g, '').trim();
-
-  // 1. 提取《...》中的书名号（最可靠的歌名标识）
-  const bookMatches = [...title.matchAll(/《([^》]+)》/g)].map(m => m[1].trim()).filter(Boolean);
-
-  // 2. 提取【歌手】歌名 或 【歌名】歌手
-  const bracketMatches = [...title.matchAll(/【([^】]+)】/g)].map(m => m[1].trim()).filter(Boolean);
-
-  // 3. 常见噪声标签与说明过滤
-  const noiseTagRegex = /【(?:4K|1080P|720P|60帧|60FPS|超清|修复|高清|无损|纯享|高音质|官方|MV|现场|完整版|精选|合集|单曲循环|Remix|动态歌词|自制|首发|伴奏|Live|LIVE|4K60帧|1080P60帧)[^】]*】/gi;
-  const noiseParenRegex = /\((?:4K|1080P|720P|60帧|60FPS|超清|修复|高清|无损|纯享|高音质|官方|MV|现场|完整版|单曲纯享|动态歌词|Live|LIVE|cover|Cover|翻唱|高码率)[^)]*\)/gi;
-  const noiseSquareRegex = /\[(?:4K|1080P|720P|60帧|60FPS|超清|修复|高清|无损|纯享|Live)[^\]]*\]/gi;
-  const noisePhraseRegex = /(?:这首歌的前奏一响|听一遍就爱上|百听不厌|终于找到了|太好听了|感动哭|千万别戴耳机听|建议戴耳机听)[^，！!？?~]*/g;
-
-  let cleaned = title
-    .replace(noiseTagRegex, ' ')
-    .replace(noiseParenRegex, ' ')
-    .replace(noiseSquareRegex, ' ')
-    .replace(noisePhraseRegex, ' ');
-
-  let stripped = cleaned
-    .replace(/[【】\[\]（）()《》<>「」『』·♪♫｜|~～]/g, ' ')
+    .replace(/[【】\[\]（）()《》<>「」『』]/g, ' ')
+    .replace(/·|♪|♫|｜|\||~|～/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
-
-  const dashMatch = stripped.match(/^([^-–—/|｜]+)\s*[-–—/|｜]\s*([^-–—/|｜]+)(?:\s*[-–—/|｜].*)?$/);
-
-  const candidates = [];
-
-  if (bookMatches.length > 0) {
-    const bookTitle = bookMatches[0];
-    if (artist) candidates.push(`${bookTitle} ${artist}`);
-    for (const b of bracketMatches) {
-      if (b !== bookTitle && b.length <= 15) {
-        candidates.push(`${bookTitle} ${b}`);
-      }
-    }
-    candidates.push(bookTitle);
-  }
-
-  if (dashMatch) {
-    const p1 = dashMatch[1].trim();
-    const p2 = dashMatch[2].trim();
-    candidates.push(`${p1} ${p2}`);
-    candidates.push(`${p2} ${p1}`);
-    candidates.push(p2);
-    candidates.push(p1);
-  }
-
-  if (bracketMatches.length > 0) {
-    const b = bracketMatches[0];
-    const rest = stripped.replace(b, '').trim();
-    if (b && rest && b.length <= 15) {
-      candidates.push(`${rest} ${b}`);
-      candidates.push(`${b} ${rest}`);
-    }
-  }
-
-  if (stripped) {
-    if (artist && !stripped.includes(artist)) {
-      candidates.push(`${stripped} ${artist}`);
-    }
-    candidates.push(stripped);
-  }
-
-  if (title) {
-    candidates.push(title);
-  }
-
-  return [...new Set(candidates.filter(c => c && c.length >= 2))];
 }
 
-// 按歌名/歌手构造搜索关键词序列（多源共用）
+// 按歌名/歌手构造搜索关键词序列（多源共用：恢复原本严格搜索，仅按歌名与歌手组合，避免模糊切词引入不相关歌曲）
 function buildLyricKeywords(title, artist) {
   const cleanTitle = cleanLyricKeyword(title);
   const cleanArtist = cleanLyricKeyword(artist);
-  const candidates = generateLyricSearchCandidates(title, artist);
-  return { keywords: candidates, cleanTitle, cleanArtist };
+
+  const keywords = [];
+  if (cleanTitle && cleanArtist) {
+    keywords.push(`${cleanTitle} ${cleanArtist}`);
+  }
+  if (cleanTitle) {
+    keywords.push(cleanTitle);
+  }
+  if (title && !keywords.includes(title)) {
+    keywords.push(title);
+  }
+
+  return { keywords, cleanTitle, cleanArtist };
 }
 
-// 从搜索结果里挑最佳匹配（原 get-lyric 的匹配逻辑，多源共用）
+// 从搜索结果里挑最佳匹配（严格匹配：必须与歌手或歌名匹配，不匹配时不胡乱兜底避免显示错误歌曲）
 function pickBestMatch(allResults, cleanTitle, cleanArtist) {
-  if (!allResults.length) return null
+  if (!allResults || !allResults.length) return null;
 
   let matchedSong = null;
 
   if (cleanArtist) {
-    const artistMain = cleanArtist.split(/[、,，&/\\\s]+/)[0].trim();
-    matchedSong = allResults.find(song =>
-      (song.artist || '').toLowerCase().includes(artistMain.toLowerCase()) ||
-      (song.name || '').toLowerCase() === cleanTitle.toLowerCase()
-    );
+    const artistMain = cleanArtist.split(/[、,，&/\\\s]+/)[0].trim().toLowerCase();
+    matchedSong = allResults.find(song => {
+      const sArtist = (song.artist || '').toLowerCase();
+      const sName = (song.name || '').toLowerCase();
+      return (artistMain && sArtist.includes(artistMain)) ||
+             (cleanTitle && sName === cleanTitle.toLowerCase());
+    });
   }
 
   // 标题相似度兜底：优先与清洗后标题更接近的结果
   if (!matchedSong && cleanTitle) {
-    const t = cleanTitle.toLowerCase()
-    matchedSong = allResults.find(song =>
-      (song.name || '').toLowerCase().includes(t) || t.includes((song.name || '').toLowerCase())
-    )
+    const t = cleanTitle.toLowerCase();
+    matchedSong = allResults.find(song => {
+      const sName = (song.name || '').toLowerCase();
+      return sName === t || sName.includes(t) || t.includes(sName);
+    });
   }
 
-  return matchedSong || allResults[0];
+  // 严格校验：若既未匹配歌手也未匹配歌名，检查首条结果是否包含歌名或歌手核心词；若完全无关则返回 null（宁缺毋滥，避免乱配错歌）
+  if (!matchedSong && allResults[0]) {
+    const first = allResults[0];
+    const sName = (first.name || '').toLowerCase();
+    const sArtist = (first.artist || '').toLowerCase();
+    const t = (cleanTitle || '').toLowerCase();
+    const a = (cleanArtist || '').toLowerCase();
+    if ((t && (sName.includes(t) || t.includes(sName))) || (a && (sArtist.includes(a) || a.includes(sArtist)))) {
+      matchedSong = first;
+    }
+  }
+
+  return matchedSong || null;
 }
 
 // 指定源的"搜索 → 匹配 → 取词"全流程。成功返回 { data: {lrc,rv,tv}, source }，失败返回 null
@@ -2759,6 +2749,7 @@ async function fetchLyricFromSource(source, keywords, cleanTitle, cleanArtist) {
     if (!allResults.length) return null;
 
     const matchedSong = pickBestMatch(allResults, cleanTitle, cleanArtist);
+    if (!matchedSong) return null;
     dlog(`[${source}] 匹配到的歌曲:`, matchedSong?.id, matchedSong?.name, matchedSong?.artist);
 
     const lyricData = source === 'kugou' ? await getKugouLyric(matchedSong)
@@ -2775,14 +2766,13 @@ async function fetchLyricFromSource(source, keywords, cleanTitle, cleanArtist) {
   }
 }
 
-// 歌词源 fallback 顺序：由渲染层传下来的 preferredSource 决定（默认酷狗，未知值兜底 kugou），
-// 首选源失败时自动回退到另一个源 —— 见 electron/lyricSourceOrder.js
-// IPC: 获取歌词（偏好源 → 另一个源 依次尝试，返回实际来源）
+// 歌词源 fallback 顺序：由渲染层传下来的 preferredSource 决定（默认 bilibili）
+// IPC: 获取歌词（偏好源 → 备用源 依次尝试，返回实际来源）
 ipcMain.handle('get-lyric', async (event, { bvid, cid, title, artist, preferredSource }) => {
   try {
     dlog('获取歌词:', { bvid, cid, title, artist, preferredSource });
 
-    const { keywords, cleanTitle, cleanArtist } = buildLyricKeywords(title, artist)
+    const { keywords, cleanTitle, cleanArtist } = buildLyricKeywords(title, artist);
 
     const sourceOrder = resolveLyricSourceOrder(preferredSource);
     dlog('歌词源尝试顺序:', sourceOrder.join(' → '));
@@ -2790,7 +2780,12 @@ ipcMain.handle('get-lyric', async (event, { bvid, cid, title, artist, preferredS
     for (const source of sourceOrder) {
       if (source === 'bilibili') {
         if (bvid) {
-          const biliResult = await getBilibiliSubtitle(bvid, cid, bilibiliAPI);
+          // B 站 CC 字幕：带内部多接口与重试；若初次未取到，稍等再试一次（防止因初始并发加载慢而误跳过 CC 字幕）
+          let biliResult = await getBilibiliSubtitle(bvid, cid, bilibiliAPI);
+          if (!biliResult && bvid) {
+            await new Promise(r => setTimeout(r, 600));
+            biliResult = await getBilibiliSubtitle(bvid, cid, bilibiliAPI);
+          }
           if (biliResult && biliResult.lrc) {
             dlog('[bilibili] 成功获取 CC 字幕，长度:', biliResult.lrc.length);
             return { code: 0, data: biliResult, source: 'bilibili' };
