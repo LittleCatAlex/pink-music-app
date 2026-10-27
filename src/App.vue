@@ -338,18 +338,23 @@ async function loadFavResources() {
     )
     try { await playlistStore.savePlaylists() } catch (_) {}
 
+    // 强制触发响应式刷新（新对象引用），使当前歌单视图与列表能即时渲染全部歌曲
+    const freshPl = playlistStore.userPlaylists.find(p => p.id === currentPlaylist.value?.id)
+    if (freshPl) {
+      playlistStore.setCurrentPlaylist({ ...freshPl, music: [...(freshPl.music || [])] })
+    }
+
     const added = typeof result === 'object' ? (result.added ?? 0) : Number(result) || 0
     const loaded = typeof result === 'object' ? (result.loaded ?? 0) : added
     const error = typeof result === 'object' ? (result.error || '') : (userStore._lastFavError || '')
+    const totalNow = currentPlaylist.value?.music?.length || 0
 
     if (error && loaded === 0) {
       alert(`拉取收藏夹失败（${error}）。可尝试重新登录 B 站后再试。`)
     } else if (added > 0) {
-      currentPlaylist.value = playlistStore.userPlaylists.find(p => p.id === currentPlaylist.value.id) || currentPlaylist.value
-      alert(`成功加载 ${added} 首视频到本地歌单！`)
+      alert(`成功加载 ${added} 首新视频到本地歌单！当前歌单共 ${totalNow} 首。`)
     } else if (loaded > 0) {
-      currentPlaylist.value = playlistStore.userPlaylists.find(p => p.id === currentPlaylist.value.id) || currentPlaylist.value
-      alert('该收藏夹内容已是最新，无新增视频。')
+      alert(`该收藏夹内容已是最新，共 ${totalNow} 首视频（本次无新增）。`)
     } else {
       alert('该收藏夹为空，暂无可加载的视频。')
     }

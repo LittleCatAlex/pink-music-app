@@ -280,8 +280,8 @@ export const useUserStore = defineStore('user', {
     },
     /**
      * 把 B 站收藏夹的 media 项转换成本地 music 字段。
-     * 已存在（bvid 或 favId+favType 命中）的会跳过；返回本次新增数。
-     * - 过滤掉追更（type=21 视频合集）、电影（type=24）等非音乐/视频稿件项
+     * 已存在（bvid 或 favId+favType 命中）的会跳过并补充缺失元数据；返回本次新增数。
+     * - 过滤掉已失效稿件、追更（type=21 视频合集）、电影（type=24）等非音乐/视频稿件项
      *   B 站媒体类型：2 视频稿件 / 12 音频 / 21 视频合集（追更） / 24 电影
      */
     _appendFavMedias(playlist, medias) {
@@ -291,38 +291,68 @@ export const useUserStore = defineStore('user', {
       let skipped = 0
       medias.forEach(item => {
         if (!item) return
-        // attr=0 正常，attr=1/9 表示视频已失效
-        if (item.attr && item.attr !== 0) return
-        // 跳过追更（视频合集）和其他非音乐/视频稿件类型
+
+        // 过滤真正已失效/已下架的视频：
+        // 1. 标题为"已失效视频"或"已失效稿件"
+        // 2. state 为 -404 (已删除)
+        // 3. attr 位掩码中 bit 0 为 1 表示已失效 ((item.attr & 1) === 1 或 item.attr === 9)
+        // 注意：不可使用 item.attr !== 0，因为正常视频的 attr 可为 2(合集/合作)、4(充电)、16 等正常标志位！
+        if (
+          item.title === '已失效视频' ||
+          item.title === '已失效稿件' ||
+          item.state === -404 ||
+          (typeof item.attr === 'number' && (item.attr & 1) === 1) ||
+          item.attr === 9
+        ) {
+          skipped++
+          return
+        }
+
+        // 跳过追更（视频合集）和电影类型
         // 2=视频稿件 12=音频 21=视频合集（追更） 24=电影
         if (item.type === 21 || item.type === 24) {
           skipped++
           return
         }
+
         const bvid = item.bvid || item.bv_id
         const hasBvid = !!bvid
         if (!hasBvid && !item.id) return
-        const exists = playlist.music.some(m => m && (
+
+        const finalCid = item.cid || item.ugc?.first_cid || 0
+        const finalCover = item.cover && (item.cover.startsWith('//') ? `https:${item.cover}` : item.cover)
+        const finalAuthor = item.upper?.name || item.upper?.mid || item.author || '未知歌手'
+
+        // 查重：若已存在则更新缺失的 cid/cover/duration/author
+        const existing = playlist.music.find(m => m && (
           (hasBvid && m.bvid === bvid) ||
           (!hasBvid && m.favId === item.id && m.favType === item.type)
         ))
-        if (exists) return
+
+        if (existing) {
+          if (!existing.cid && finalCid) existing.cid = finalCid
+          if (!existing.cover && finalCover) existing.cover = finalCover
+          if (!existing.duration && item.duration) existing.duration = item.duration
+          if (!existing.author && finalAuthor) existing.author = finalAuthor
+          return
+        }
+
         playlist.music.push({
           bvid: bvid || '',
-          cid: item.cid || item.ugc?.first_cid,
+          cid: finalCid,
           favId: item.id,
           favType: item.type,
-          title: item.title,
-          author: item.upper?.name || item.upper?.mid || '',
-          cover: item.cover && (item.cover.startsWith('//') ? `https:${item.cover}` : item.cover),
-          duration: item.duration,
+          title: item.title ? item.title.replace(/<[^>]+>/g, '').trim() : '',
+          author: finalAuthor,
+          cover: finalCover || '',
+          duration: item.duration || 0,
           playCount: item.cnt_info?.play || 0,
           isBiliFavoriteResource: true
         })
         added++
       })
       if (skipped > 0) {
-        console.log(`[pink-music] 跳过 ${skipped} 个非音乐项（追更/电影）`)
+        console.log(`[pink-music] 跳过 ${skipped} 个失效或非音乐项`)
       }
       return added
     },
@@ -345,12 +375,13 @@ export const useUserStore = defineStore('user', {
       let totalLoaded = 0;
       let totalAdded = 0;
       let totalCount = playlist.media_count || 0;
+      const MAX_PAGES = 500; // 最多 500 页 (10000 首)，防止死循环
 
-      while (hasMore) {
+      while (hasMore && page <= MAX_PAGES) {
         const res = await window.electronAPI.getFavResourceList(mediaId, page, 20);
         if (res?.code !== 0) {
           this._lastFavError = res?.message || `code=${res?.code}`;
-          console.error(`getFavResourceList 第 ${page} 页失败:`, this._lastFavError, 'mediaId=', mediaId);
+          console.error(`getFavResourceList 第 ${page} 页失败:`, this._lastFavError, "mediaId=", mediaId);
           break;
         }
 
@@ -381,21 +412,32 @@ export const useUserStore = defineStore('user', {
           } catch (_) {}
         }
 
-        hasMore = !!data?.has_more && medias.length >= 20;
+        // 翻页判定：
+        // 1. 若 B 站返回了 has_more 字段（布尔值或数字），以其为准
+        // 2. 若缺少 has_more，只要已拉取数量 totalLoaded 少于总数 totalCount 且当前页非空，继续翻页
+        // 3. 绝不能简单要求 medias.length >= 20，因为当前页若有已删除稿件被 B 站过滤，medias.length 可能为 18/19 但依然 has_more=true
+        if (data?.has_more !== undefined) {
+          hasMore = Boolean(data.has_more);
+        } else if (totalCount > 0) {
+          hasMore = totalLoaded < totalCount;
+        } else {
+          hasMore = medias.length >= 20;
+        }
+
         page++;
 
         if (hasMore) {
-          await new Promise(r => setTimeout(r, 100));
+          await new Promise(r => setTimeout(r, 80));
         }
       }
 
-      if (totalAdded > 0 && playlistStore && typeof playlistStore.savePlaylists === 'function') {
+      if (playlistStore && typeof playlistStore.savePlaylists === 'function') {
         try { await playlistStore.savePlaylists(); } catch (e) {
           console.warn('[loadAllFavoriteResources] save failed:', e.message);
         }
       }
       return { added: totalAdded, loaded: totalLoaded, error: this._lastFavError };
-    },
+    }
 
 
   }
