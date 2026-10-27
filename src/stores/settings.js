@@ -165,7 +165,11 @@ export const useSettingsStore = defineStore('settings', {
         if (typeof data.windowControlsEnabled === 'boolean') this.windowControlsEnabled = data.windowControlsEnabled
         if (typeof data.lyricDisplayMode === 'string') this.lyricDisplayMode = data.lyricDisplayMode
         if (['bilibili', 'kugou', 'netease'].includes(data.lyricPreferredSource)) {
-          this.lyricPreferredSource = data.lyricPreferredSource
+          if (data._schemaVersion && data._schemaVersion >= 14) {
+            this.lyricPreferredSource = data.lyricPreferredSource
+          } else {
+            this.lyricPreferredSource = data.lyricPreferredSource === 'netease' ? 'netease' : 'bilibili'
+          }
         }
         if (typeof data.desktopLyricsLocked === 'boolean') this.desktopLyricsLocked = data.desktopLyricsLocked
         if (typeof data.desktopLyricsHotkey === 'string' && data.desktopLyricsHotkey) this.desktopLyricsHotkey = data.desktopLyricsHotkey
