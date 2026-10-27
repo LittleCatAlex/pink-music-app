@@ -16,7 +16,8 @@
     "electron:build:all": "npm run build && electron-builder -mw",
     "test:storage": "node scripts/test-persistent-storage.js",
     "test:playlist": "node scripts/test-playlist-migration.js",
-    "test": "npm run test:storage && npm run test:playlist"
+    "test": "npm run test:storage && npm run test:playlist && npm run test:subtitle",
+    "test:subtitle": "node scripts/test-bilibili-subtitle.js"
   },
   "dependencies": {
     "axios": "^1.15.2",

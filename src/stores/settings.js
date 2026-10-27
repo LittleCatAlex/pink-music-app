@@ -18,7 +18,7 @@ let _persistChain = Promise.resolve()
 // Schema v12：新增默认歌词源偏好 lyricPreferredSource（默认酷狗；老数据缺失时迁移补默认值）
 // Schema v13：新增桌面歌词高对比模式开关 desktopLyricsHighContrast
 const settingsSchema = defineSchema({
-  version: 13,
+  version: 14,
   fields: {
     audioQuality: s.enum(['auto', 'lossless', 'high', 'medium', 'low'], 'auto'),
     // 首次启动默认关闭：可视化较吃性能，需要时在引导页或「我的 → 设置」里开启
@@ -30,7 +30,7 @@ const settingsSchema = defineSchema({
     windowControlsEnabled: s.boolean(true),
     lyricDisplayMode: s.enum(['original', 'romaji', 'translation'], 'original'),
     // 默认歌词源：语义是「优先使用」，取词失败时主进程自动回退到另一个源（electron/lyricSourceOrder.js）
-    lyricPreferredSource: s.enum(['kugou', 'netease'], 'kugou'),
+    lyricPreferredSource: s.enum(['bilibili', 'kugou', 'netease'], 'bilibili'),
     desktopLyricsLocked: s.boolean(false),
     desktopLyricsHotkey: s.string('CommandOrControl+D'),
     // 高对比：浅色壁纸/浅色主题下歌词窗改用白字描边，避免歌词发虚
@@ -73,7 +73,11 @@ const settingsSchema = defineSchema({
     }),
     // v12 → v13：补桌面歌词高对比模式默认值（默认关闭，保持既有视觉）
     // 注意：loader 按 migrations[目标版本] 取迁移函数（见 utils/schema.js），v12→v13 对应 key 13
-    13: (data) => ({ ...data, desktopLyricsHighContrast: data.desktopLyricsHighContrast ?? false })
+    13: (data) => ({ ...data, desktopLyricsHighContrast: data.desktopLyricsHighContrast ?? false }),
+    14: (data) => ({
+      ...data,
+      lyricPreferredSource: ['bilibili', 'kugou', 'netease'].includes(data.lyricPreferredSource) ? data.lyricPreferredSource : 'bilibili'
+    })
   }
 })
 
@@ -124,7 +128,7 @@ export const useSettingsStore = defineStore('settings', {
       ? _peekedSettings.lyricDisplayMode
       : 'original',
     // 老数据（无该键 / 非法值）一律落到默认 'kugou'
-    lyricPreferredSource: _peekedSettings.lyricPreferredSource === 'netease' ? 'netease' : 'kugou',
+    lyricPreferredSource: ['bilibili', 'kugou', 'netease'].includes(_peekedSettings.lyricPreferredSource) ? _peekedSettings.lyricPreferredSource : 'bilibili',
     desktopLyricsLocked: !!_peekedSettings.desktopLyricsLocked,
     desktopLyricsHotkey: typeof _peekedSettings.desktopLyricsHotkey === 'string'
       ? _peekedSettings.desktopLyricsHotkey
@@ -158,7 +162,7 @@ export const useSettingsStore = defineStore('settings', {
         if (typeof data.audioQuality === 'string') this.audioQuality = data.audioQuality
         if (typeof data.windowControlsEnabled === 'boolean') this.windowControlsEnabled = data.windowControlsEnabled
         if (typeof data.lyricDisplayMode === 'string') this.lyricDisplayMode = data.lyricDisplayMode
-        if (data.lyricPreferredSource === 'kugou' || data.lyricPreferredSource === 'netease') {
+        if (['bilibili', 'kugou', 'netease'].includes(data.lyricPreferredSource)) {
           this.lyricPreferredSource = data.lyricPreferredSource
         }
         if (typeof data.desktopLyricsLocked === 'boolean') this.desktopLyricsLocked = data.desktopLyricsLocked
@@ -233,7 +237,7 @@ export const useSettingsStore = defineStore('settings', {
      * 非法值直接忽略（保持现值），避免脏数据写进持久化快照。
      */
     setLyricPreferredSource(source) {
-      if (source !== 'kugou' && source !== 'netease') return
+      if (!['bilibili', 'kugou', 'netease'].includes(source)) return
       this.lyricPreferredSource = source
       this.persist()
     },

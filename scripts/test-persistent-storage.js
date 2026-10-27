@@ -61,5 +61,16 @@ assert.strictEqual(retrievedCookies.SESSDATA, 'mock_sessdata');
 
 console.log('✓ Bilibili credential storage verified.');
 
+// Test 3: Settings lyricPreferredSource default and migration
+const defaultSettings = {
+  version: 14,
+  lyricPreferredSource: 'bilibili'
+};
+storageMock.setItem('pink-music-settings', JSON.stringify(defaultSettings));
+const retrievedSettings = JSON.parse(storageMock.getItem('pink-music-settings'));
+assert.strictEqual(retrievedSettings.lyricPreferredSource, 'bilibili', 'Default lyric source should be bilibili');
+
+console.log('✓ Settings lyricPreferredSource default verified.');
+
 console.log('[test:storage] All persistent storage tests passed!');
 process.exit(0);

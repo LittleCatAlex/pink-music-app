@@ -6,6 +6,7 @@ const axios = require('axios');
 const crypto = require('crypto');
 const { searchKugou, getKugouLyric } = require('./lyricSources');
 const { resolveLyricSourceOrder } = require('./lyricSourceOrder');
+const { getBilibiliSubtitle } = require('./bilibiliSubtitle');
 const { resolveLyricsWindowPosition } = require('./lyricsWindowBounds');
 const { discordRpcManager } = require('./discordRpc');
 
@@ -397,6 +398,34 @@ class BilibiliAPI {
     }
   }
 
+
+  async getVideoSubtitles(bvid, cid) {
+    try {
+      await this.refreshCookiesFromSession();
+      dlog('获取视频字幕:', bvid, cid);
+      let targetCid = cid;
+      if (!targetCid && bvid) {
+        const episodes = await this.getVideoEpisodes(bvid);
+        if (episodes?.code === 0 && Array.isArray(episodes.data) && episodes.data.length > 0) {
+          targetCid = episodes.data[0].cid;
+        }
+      }
+      if (!targetCid) return { code: -1, message: '缺少 cid' };
+
+      const data = await this.request(`${BILIBILI_BASE}/x/player/wbi/v2`, {
+        params: { bvid, cid: targetCid }
+      });
+
+      const subtitles = data?.data?.subtitle?.subtitles;
+      if (!Array.isArray(subtitles) || subtitles.length === 0) {
+        return { code: 0, data: { subtitles: [] } };
+      }
+      return { code: 0, data: { subtitles } };
+    } catch (error) {
+      console.error('获取视频字幕失败:', error.message);
+      return { code: -1, message: error.message };
+    }
+  },
   async getAudioProxy(audioUrl) {
     try {
       console.log('代理音频请求:', audioUrl);
@@ -2759,9 +2788,19 @@ ipcMain.handle('get-lyric', async (event, { bvid, cid, title, artist, preferredS
     dlog('歌词源尝试顺序:', sourceOrder.join(' → '));
 
     for (const source of sourceOrder) {
-      const result = await fetchLyricFromSource(source, keywords, cleanTitle, cleanArtist);
-      if (result) {
-        return { code: 0, data: result.data, source: result.source };
+      if (source === 'bilibili') {
+        if (bvid) {
+          const biliResult = await getBilibiliSubtitle(bvid, cid, bilibiliAPI);
+          if (biliResult && biliResult.lrc) {
+            dlog('[bilibili] 成功获取 CC 字幕，长度:', biliResult.lrc.length);
+            return { code: 0, data: biliResult, source: 'bilibili' };
+          }
+        }
+      } else {
+        const result = await fetchLyricFromSource(source, keywords, cleanTitle, cleanArtist);
+        if (result) {
+          return { code: 0, data: result.data, source: result.source };
+        }
       }
     }
 

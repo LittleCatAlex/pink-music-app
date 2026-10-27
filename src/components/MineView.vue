@@ -874,7 +874,7 @@ function toggleDiscordRpc(enabled) {
         <div class="setting-item">
           <div class="setting-label-with-hint">
             <label>默认歌词源</label>
-            <span class="setting-hint">优先从该源取词，失败时自动回退到另一个源；已缓存的歌词与进度偏移不受影响</span>
+            <span class="setting-hint">优先从该源取词，失败时自动回退到其他源；已缓存的歌词与进度偏移不受影响</span>
           </div>
           <div class="setting-value">
             <select
@@ -882,7 +882,8 @@ function toggleDiscordRpc(enabled) {
               @change="settingsStore.setLyricPreferredSource(settingsStore.lyricPreferredSource)"
               class="quality-select"
             >
-              <option value="kugou">酷狗（KRC，默认）</option>
+              <option value="bilibili">哔哩哔哩 CC 字幕（默认）</option>
+              <option value="kugou">酷狗（KRC）</option>
               <option value="netease">网易云</option>
             </select>
           </div>

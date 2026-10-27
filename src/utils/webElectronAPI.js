@@ -442,8 +442,54 @@ export function setupWebElectronAPI() {
       }
     },
 
-    async getLyric({ title, artist }) {
+    async getLyric({ bvid, cid, title, artist, preferredSource }) {
       try {
+        // 若提供了 bvid，且 preferredSource 为 bilibili 或未指定，优先尝试从 B 站获取 CC 字幕
+        if (bvid && (preferredSource === 'bilibili' || !preferredSource)) {
+          try {
+            let targetCid = cid;
+            if (!targetCid) {
+              const pageRes = await requestApi(`/api/x/player/pagelist?bvid=${encodeURIComponent(bvid)}`);
+              if (pageRes?.code === 0 && Array.isArray(pageRes.data) && pageRes.data.length > 0) {
+                targetCid = pageRes.data[0].cid;
+              }
+            }
+            if (targetCid) {
+              const subRes = await requestApi(`/api/x/player/wbi/v2?bvid=${encodeURIComponent(bvid)}&cid=${encodeURIComponent(targetCid)}`);
+              const subtitles = subRes?.data?.subtitle?.subtitles;
+              if (Array.isArray(subtitles) && subtitles.length > 0) {
+                const isZh = (s) => (s.lan || '').toLowerCase().startsWith('zh') || (s.lan_doc || '').includes('中');
+                const manual = subtitles.filter(s => s.ai_type === 0 || s.type === 0);
+                const ai = subtitles.filter(s => s.ai_type !== 0 && s.type !== 0);
+                const main = manual.find(isZh) || manual[0] || ai.find(isZh) || ai[0];
+                if (main && main.subtitle_url) {
+                  const url = main.subtitle_url.startsWith('//') ? `https:${main.subtitle_url}` : main.subtitle_url;
+                  const res = await fetch(url);
+                  const data = await res.json();
+                  if (data && Array.isArray(data.body) && data.body.length > 0) {
+                    const lines = [];
+                    for (const item of data.body) {
+                      if (!item || typeof item.from !== 'number' || item.content === undefined || item.content === null) continue;
+                      const text = String(item.content).replace(/[\r\n]+/g, ' ').trim();
+                      if (!text) continue;
+                      const totalMs = Math.max(0, Math.round(Number(item.from) * 1000));
+                      const m = Math.floor(totalMs / 60000);
+                      const s = Math.floor((totalMs % 60000) / 1000);
+                      const cs = Math.floor((totalMs % 1000) / 10);
+                      lines.push(`[${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(cs).padStart(2, '0')}]${text}`);
+                    }
+                    if (lines.length > 0) {
+                      return { code: 0, data: { lrc: lines.join('\n'), rv: '', tv: '' }, source: 'bilibili' };
+                    }
+                  }
+                }
+              }
+            }
+          } catch (e) {
+            console.warn('[Web] 获取 B 站 CC 字幕失败，回退其他源:', e.message);
+          }
+        }
+
         const candidates = generateLyricSearchCandidates(title, artist);
         for (const candidate of candidates) {
           const searchRes = await this.searchLyric(candidate);
