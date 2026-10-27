@@ -463,7 +463,8 @@ class BilibiliAPI {
       console.error('获取视频字幕失败:', error.message);
       return { code: -1, message: error.message };
     }
-  },
+  }
+
   async getAudioProxy(audioUrl) {
     try {
       console.log('代理音频请求:', audioUrl);
@@ -2666,76 +2667,131 @@ async function getNeteaseLyric(songId) {
 }
 
 // 清洗搜索关键词：去掉 B 站标题常见的装饰符号，降低歌词源误匹配概率
-function cleanLyricKeyword(raw) {
-  return String(raw || '')
-    .replace(/<[^>]+>/g, '')
-    .replace(/[【】\[\]（）()《》<>「」『』]/g, ' ')
-    .replace(/·|♪|♫|｜|\||~|～/g, ' ')
+function cleanTitleAndExtract(title, artist) {
+  let raw = String(title || '').replace(/<[^>]+>/g, '').trim();
+  const rawArtist = String(artist || '').replace(/<[^>]+>/g, '').trim();
+
+  // 1. 提取《...》中的书名号（最可靠的歌名标识）
+  const bookMatch = raw.match(/《([^》]+)》/);
+  const bookTitle = bookMatch ? bookMatch[1].trim() : '';
+
+  // 2. 常见噪声标签与说明过滤
+  const noiseTagRegex = /【(?:4K|1080P|720P|60帧|60FPS|超清|修复|高清|无损|纯享|高音质|官方|MV|现场|完整版|精选|合集|单曲循环|Remix|动态歌词|自制|首发|伴奏|Live|LIVE|4K60帧|1080P60帧)[^】]*】/gi;
+  const noiseParenRegex = /\((?:4K|1080P|720P|60帧|60FPS|超清|修复|高清|无损|纯享|高音质|官方|MV|现场|完整版|单曲纯享|动态歌词|Live|LIVE|cover|Cover|翻唱|高码率)[^)]*\)/gi;
+  const noiseSquareRegex = /\[(?:4K|1080P|720P|60帧|60FPS|超清|修复|高清|无损|纯享|Live)[^\]]*\]/gi;
+  const noiseWordsRegex = /(?:4K|1080P|60帧|60FPS|超清|修复|高清|无损|纯享|高音质|官方|MV|现场版?|完整版|单曲循环|Remix|动态歌词|自制|首发|伴奏|Live|LIVE|音质|高码率)/gi;
+
+  let cleaned = raw
+    .replace(noiseTagRegex, ' ')
+    .replace(noiseParenRegex, ' ')
+    .replace(noiseSquareRegex, ' ')
+    .replace(/[【】\[\]（）()《》<>「」『』·♪♫｜|~～]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
-}
 
-// 按歌名/歌手构造搜索关键词序列（多源共用：恢复原本严格搜索，仅按歌名与歌手组合，避免模糊切词引入不相关歌曲）
-function buildLyricKeywords(title, artist) {
-  const cleanTitle = cleanLyricKeyword(title);
-  const cleanArtist = cleanLyricKeyword(artist);
+  const queries = [];
 
-  const keywords = [];
-  if (cleanTitle && cleanArtist) {
-    keywords.push(`${cleanTitle} ${cleanArtist}`);
-  }
-  if (cleanTitle) {
-    keywords.push(cleanTitle);
-  }
-  if (title && !keywords.includes(title)) {
-    keywords.push(title);
+  // 若存在书名号
+  if (bookTitle) {
+    const artistInTitle = cleaned.replace(bookTitle, '').replace(noiseWordsRegex, ' ').replace(/\s+/g, ' ').trim();
+    if (artistInTitle) {
+      queries.push(bookTitle + ' ' + artistInTitle);
+      queries.push(artistInTitle + ' ' + bookTitle);
+    }
+    queries.push(bookTitle);
   }
 
-  return { keywords, cleanTitle, cleanArtist };
-}
-
-// 从搜索结果里挑最佳匹配（严格匹配：必须与歌手或歌名匹配，不匹配时不胡乱兜底避免显示错误歌曲）
-function pickBestMatch(allResults, cleanTitle, cleanArtist) {
-  if (!allResults || !allResults.length) return null;
-
-  let matchedSong = null;
-
-  if (cleanArtist) {
-    const artistMain = cleanArtist.split(/[、,，&/\\\s]+/)[0].trim().toLowerCase();
-    matchedSong = allResults.find(song => {
-      const sArtist = (song.artist || '').toLowerCase();
-      const sName = (song.name || '').toLowerCase();
-      return (artistMain && sArtist.includes(artistMain)) ||
-             (cleanTitle && sName === cleanTitle.toLowerCase());
-    });
-  }
-
-  // 标题相似度兜底：优先与清洗后标题更接近的结果
-  if (!matchedSong && cleanTitle) {
-    const t = cleanTitle.toLowerCase();
-    matchedSong = allResults.find(song => {
-      const sName = (song.name || '').toLowerCase();
-      return sName === t || sName.includes(t) || t.includes(sName);
-    });
-  }
-
-  // 严格校验：若既未匹配歌手也未匹配歌名，检查首条结果是否包含歌名或歌手核心词；若完全无关则返回 null（宁缺毋滥，避免乱配错歌）
-  if (!matchedSong && allResults[0]) {
-    const first = allResults[0];
-    const sName = (first.name || '').toLowerCase();
-    const sArtist = (first.artist || '').toLowerCase();
-    const t = (cleanTitle || '').toLowerCase();
-    const a = (cleanArtist || '').toLowerCase();
-    if ((t && (sName.includes(t) || t.includes(sName))) || (a && (sArtist.includes(a) || a.includes(sArtist)))) {
-      matchedSong = first;
+  // 若包含 " - " 或 " / " 分隔
+  const dashMatch = raw.replace(noiseTagRegex, '').replace(noiseParenRegex, '').match(/([^-–—/|｜]+)\s*[-–—/|｜]\s*([^-–—/|｜]+)/);
+  if (dashMatch) {
+    const p1 = dashMatch[1].replace(/[【】\[\]()（）《》]/g, ' ').replace(noiseWordsRegex, ' ').trim();
+    const p2 = dashMatch[2].replace(/[【】\[\]()（）《》]/g, ' ').replace(noiseWordsRegex, ' ').trim();
+    if (p1 && p2) {
+      queries.push(p1 + ' ' + p2);
+      queries.push(p2 + ' ' + p1);
+      queries.push(p2);
+      queries.push(p1);
     }
   }
 
-  return matchedSong || null;
+  const cleanWithoutNoise = cleaned.replace(noiseWordsRegex, ' ').replace(/\s+/g, ' ').trim();
+  if (cleanWithoutNoise && !queries.includes(cleanWithoutNoise)) {
+    queries.push(cleanWithoutNoise);
+  }
+
+  if (cleaned && !queries.includes(cleaned)) {
+    queries.push(cleaned);
+  }
+
+  if (rawArtist && !queries.includes(cleanWithoutNoise + ' ' + rawArtist)) {
+    queries.push(cleanWithoutNoise + ' ' + rawArtist);
+  }
+
+  return {
+    bookTitle,
+    cleanTitle: cleanWithoutNoise || cleaned,
+    cleanArtist: rawArtist,
+    queries: [...new Set(queries.filter(q => q && q.length >= 2))]
+  };
+}
+
+// 按歌名/歌手构造搜索关键词序列（多源共用）
+function buildLyricKeywords(title, artist) {
+  const { bookTitle, cleanTitle, cleanArtist, queries } = cleanTitleAndExtract(title, artist);
+  return { keywords: queries, cleanTitle, cleanArtist, bookTitle };
+}
+
+// 从搜索结果里挑最佳匹配
+function pickBestMatch(allResults, cleanTitle, cleanArtist, bookTitle = '') {
+  if (!allResults || !allResults.length) return null;
+  const targetTitle = (bookTitle || cleanTitle).toLowerCase();
+
+  // 1. 歌名完全相等
+  let matchedSong = allResults.find(s => (s.name || '').toLowerCase() === targetTitle);
+  if (matchedSong) return matchedSong;
+
+  // 2. 歌手匹配
+  if (cleanArtist) {
+    const artistMain = cleanArtist.split(/[、,，&/\\s]+/)[0].trim().toLowerCase();
+    matchedSong = allResults.find(song => {
+      const sArtist = (song.artist || '').toLowerCase();
+      const sName = (song.name || '').toLowerCase();
+      return (artistMain && sArtist.includes(artistMain)) || (cleanTitle && sName === cleanTitle.toLowerCase());
+    });
+    if (matchedSong) return matchedSong;
+  }
+
+  // 3. 标题相似度：包含
+  if (targetTitle) {
+    matchedSong = allResults.find(song => {
+      const sName = (song.name || '').toLowerCase();
+      return sName === targetTitle || sName.includes(targetTitle) || targetTitle.includes(sName);
+    });
+    if (matchedSong) return matchedSong;
+  }
+
+  // 4. 首条结果保底校验（需共享实质词，避免乱配完全无关的歌）
+  if (allResults[0]) {
+    const first = allResults[0];
+    const sName = (first.name || '').toLowerCase();
+    const sArtist = (first.artist || '').toLowerCase();
+    const t = targetTitle;
+    const a = (cleanArtist || '').toLowerCase();
+    if ((t && (sName.includes(t) || t.includes(sName))) || (a && (sArtist.includes(a) || a.includes(sArtist)))) {
+      return first;
+    }
+    const targetWords = targetTitle.split(/\s+/).filter(w => w.length >= 2);
+    const firstCombined = ((first.name || '') + ' ' + (first.artist || '')).toLowerCase();
+    if (targetWords.some(w => firstCombined.includes(w))) {
+      return first;
+    }
+  }
+
+  return null;
 }
 
 // 指定源的"搜索 → 匹配 → 取词"全流程。成功返回 { data: {lrc,rv,tv}, source }，失败返回 null
-async function fetchLyricFromSource(source, keywords, cleanTitle, cleanArtist) {
+async function fetchLyricFromSource(source, keywords, cleanTitle, cleanArtist, bookTitle = '') {
   try {
     let allResults = [];
     for (const keyword of keywords) {
@@ -2748,7 +2804,7 @@ async function fetchLyricFromSource(source, keywords, cleanTitle, cleanArtist) {
     }
     if (!allResults.length) return null;
 
-    const matchedSong = pickBestMatch(allResults, cleanTitle, cleanArtist);
+    const matchedSong = pickBestMatch(allResults, cleanTitle, cleanArtist, bookTitle);
     if (!matchedSong) return null;
     dlog(`[${source}] 匹配到的歌曲:`, matchedSong?.id, matchedSong?.name, matchedSong?.artist);
 
@@ -2772,7 +2828,7 @@ ipcMain.handle('get-lyric', async (event, { bvid, cid, title, artist, preferredS
   try {
     dlog('获取歌词:', { bvid, cid, title, artist, preferredSource });
 
-    const { keywords, cleanTitle, cleanArtist } = buildLyricKeywords(title, artist);
+    const { keywords, cleanTitle, cleanArtist, bookTitle } = buildLyricKeywords(title, artist);
 
     const sourceOrder = resolveLyricSourceOrder(preferredSource);
     dlog('歌词源尝试顺序:', sourceOrder.join(' → '));
@@ -2792,7 +2848,7 @@ ipcMain.handle('get-lyric', async (event, { bvid, cid, title, artist, preferredS
           }
         }
       } else {
-        const result = await fetchLyricFromSource(source, keywords, cleanTitle, cleanArtist);
+        const result = await fetchLyricFromSource(source, keywords, cleanTitle, cleanArtist, bookTitle);
         if (result) {
           return { code: 0, data: result.data, source: result.source };
         }

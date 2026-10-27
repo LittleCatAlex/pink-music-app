@@ -8,3 +8,4 @@ screenshots/*.jpg
 screenshots/*.jpeg
 .env
 .env.local
+cache/
