@@ -76,7 +76,7 @@ const settingsSchema = defineSchema({
     13: (data) => ({ ...data, desktopLyricsHighContrast: data.desktopLyricsHighContrast ?? false }),
     14: (data) => ({
       ...data,
-      lyricPreferredSource: ['bilibili', 'kugou', 'netease'].includes(data.lyricPreferredSource) ? data.lyricPreferredSource : 'bilibili'
+      lyricPreferredSource: data.lyricPreferredSource === 'netease' ? 'netease' : 'bilibili'
     })
   }
 })
@@ -128,7 +128,9 @@ export const useSettingsStore = defineStore('settings', {
       ? _peekedSettings.lyricDisplayMode
       : 'original',
     // 老数据（无该键 / 非法值）一律落到默认 'kugou'
-    lyricPreferredSource: ['bilibili', 'kugou', 'netease'].includes(_peekedSettings.lyricPreferredSource) ? _peekedSettings.lyricPreferredSource : 'bilibili',
+    lyricPreferredSource: (_peekedSettings._schemaVersion && _peekedSettings._schemaVersion >= 14 && ['bilibili', 'kugou', 'netease'].includes(_peekedSettings.lyricPreferredSource))
+      ? _peekedSettings.lyricPreferredSource
+      : (_peekedSettings.lyricPreferredSource === 'netease' ? 'netease' : 'bilibili'),
     desktopLyricsLocked: !!_peekedSettings.desktopLyricsLocked,
     desktopLyricsHotkey: typeof _peekedSettings.desktopLyricsHotkey === 'string'
       ? _peekedSettings.desktopLyricsHotkey
