@@ -1,3 +1,107 @@
+// 通用噪声词与无实质意义停用词（避免仅因 feat、official、is 等助词误匹配无关歌曲）
+const GENERIC_STOP_WORDS = new Set([
+  'feat', 'ft', 'feat.', 'ft.', 'featuring',
+  'official', 'mv', 'pv', 'video', 'music', 'audio', 'sound', 'ost', 'op', 'ed',
+  'remix', 'live', 'cover', 'ver', 'version', 'mix', 'edit', 'instrumental',
+  '伴奏', '纯音乐', '官方', '公式', '完整版', '现场', '翻唱', '原版', '自制', '首发',
+  'the', 'a', 'an', 'is', 'in', 'on', 'of', 'to', 'for', 'and', 'with', 'by', 'this', 'that', 'then'
+]);
+
+function normalizeForComparison(str) {
+  if (!str) return '';
+  return String(str)
+    .toLowerCase()
+    .replace(/<[^>]+>/g, '')
+    .replace(/[【】\[\]（）()《》<>「」『』·♪♫｜|~～"'`“”‘’_]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractCoreTitle(title) {
+  let s = String(title || '')
+    .replace(/【[^】]*】/g, ' ')
+    .replace(/\[[^\]]*\]/g, ' ')
+    .replace(/\((?:feat|ft|cover|live|remix|official|mv)[^)]*\)/gi, ' ')
+    .replace(/(?:feat|ft)\.?\s*[^\s/|｜]+(?:\s+[^\s/|｜]+)?/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return normalizeForComparison(s);
+}
+
+function extractMeaningfulTokens(str) {
+  const norm = normalizeForComparison(str);
+  if (!norm) return [];
+  const tokens = [];
+  const words = norm.split(/\s+/);
+  for (const w of words) {
+    if (!w) continue;
+    if (GENERIC_STOP_WORDS.has(w)) continue;
+    if (/[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff66-\uff9f]/.test(w)) {
+      tokens.push(w);
+    } else if (w.length >= 2) {
+      tokens.push(w);
+    }
+  }
+  return tokens;
+}
+
+// 严格校验候选歌曲是否真正匹配目标歌曲
+function isStrictMatch(candidate, cleanTitle, cleanArtist, bookTitle = '') {
+  if (!candidate || !candidate.name) return false;
+
+  const targetTitle = bookTitle || cleanTitle;
+  const normTarget = normalizeForComparison(targetTitle);
+  const normCandidate = normalizeForComparison(candidate.name);
+
+  if (!normTarget || !normCandidate) return false;
+
+  // 1. 完全相同
+  if (normCandidate === normTarget) return true;
+
+  // 2. 核心歌名完全相同（去除 feat、噪声括号等）
+  const coreTarget = extractCoreTitle(targetTitle);
+  const coreCandidate = extractCoreTitle(candidate.name);
+  if (coreTarget && coreCandidate && coreTarget === coreCandidate) return true;
+
+  // 3. 高覆盖率的子串包含关系（如 "晴天" 与 "晴天 (Live)"）
+  if (normTarget.includes(normCandidate) || normCandidate.includes(normTarget)) {
+    const shorter = normTarget.length <= normCandidate.length ? normTarget : normCandidate;
+    const longer = normTarget.length > normCandidate.length ? normTarget : normCandidate;
+    const coverage = shorter.length / longer.length;
+    if (coverage >= 0.6) return true;
+    const remainder = longer.replace(shorter, '').trim();
+    if (extractMeaningfulTokens(remainder).length === 0) return true;
+  }
+
+  if (coreTarget && coreCandidate && (coreTarget.includes(coreCandidate) || coreCandidate.includes(coreTarget))) {
+    const shorter = coreTarget.length <= coreCandidate.length ? coreTarget : coreCandidate;
+    const longer = coreTarget.length > coreCandidate.length ? coreTarget : coreCandidate;
+    if (shorter.length / longer.length >= 0.6) return true;
+    const remainder = longer.replace(shorter, '').trim();
+    if (extractMeaningfulTokens(remainder).length === 0) return true;
+  }
+
+  // 4. 有效核心词/词组匹配（需覆盖 70% 以上有意义词，杜绝依靠 feat / 噪声词误匹配）
+  const targetTokens = extractMeaningfulTokens(coreTarget || normTarget);
+  const candidateTokens = extractMeaningfulTokens(coreCandidate || normCandidate);
+
+  if (targetTokens.length > 0 && candidateTokens.length > 0) {
+    const matchedCount = targetTokens.filter(t => {
+      return candidateTokens.some(ct => ct === t || ct.includes(t) || t.includes(ct));
+    }).length;
+
+    const ratio = matchedCount / targetTokens.length;
+    if (ratio >= 0.7 && matchedCount >= 1) {
+      if (candidateTokens.length <= targetTokens.length * 2) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+// 清洗搜索关键词：去掉 B 站标题常见的装饰符号，降低歌词源误匹配概率
 function cleanTitleAndExtract(title, artist) {
   let raw = String(title || '').replace(/<[^>]+>/g, '').trim();
   const rawArtist = String(artist || '').replace(/<[^>]+>/g, '').trim();
@@ -6,11 +110,11 @@ function cleanTitleAndExtract(title, artist) {
   const bookMatch = raw.match(/《([^》]+)》/);
   const bookTitle = bookMatch ? bookMatch[1].trim() : '';
 
-  // 2. 常见噪声标签与说明过滤
-  const noiseTagRegex = /【(?:4K|1080P|720P|60帧|60FPS|超清|修复|高清|无损|纯享|高音质|官方|MV|现场|完整版|精选|合集|单曲循环|Remix|动态歌词|自制|首发|伴奏|Live|LIVE|4K60帧|1080P60帧)[^】]*】/gi;
-  const noiseParenRegex = /\((?:4K|1080P|720P|60帧|60FPS|超清|修复|高清|无损|纯享|高音质|官方|MV|现场|完整版|单曲纯享|动态歌词|Live|LIVE|cover|Cover|翻唱|高码率)[^)]*\)/gi;
-  const noiseSquareRegex = /\[(?:4K|1080P|720P|60帧|60FPS|超清|修复|高清|无损|纯享|Live)[^\]]*\]/gi;
-  const noiseWordsRegex = /(?:4K|1080P|60帧|60FPS|超清|修复|高清|无损|纯享|高音质|官方|MV|现场版?|完整版|单曲循环|Remix|动态歌词|自制|首发|伴奏|Live|LIVE|音质|高码率)/gi;
+  // 2. 常见噪声标签与说明过滤（包含中文、日文及英文常见投稿标签）
+  const noiseTagRegex = /【(?:4K|1080P|720P|60帧|60FPS|超清|修复|高清|无损|纯享|高音质|官方|公式|Official|MV|PV|现场|完整版|精选|合集|单曲循环|Remix|动态歌词|自制|首发|伴奏|Live|LIVE|本家投稿|オリジナル|Original|VOCALOID|UTAU|CeVIO|SynthV)[^】]*】/gi;
+  const noiseParenRegex = /\((?:4K|1080P|720P|60帧|60FPS|超清|修复|高清|无损|纯享|高音质|官方|公式|Official|MV|PV|现场|完整版|单曲纯享|动态歌词|Live|LIVE|cover|Cover|翻唱|高码率)[^)]*\)/gi;
+  const noiseSquareRegex = /\[(?:4K|1080P|720P|60帧|60FPS|超清|修复|高清|无损|纯享|Live|MV|PV|Official|公式)[^\]]*\]/gi;
+  const noiseWordsRegex = /(?:4K|1080P|60帧|60FPS|超清|修复|高清|无损|纯享|高音质|官方|公式|Official|OFFICIAL|MV|PV|现场版?|完整版|单曲循环|Remix|动态歌词|自制|首发|伴奏|Live|LIVE|本家投稿|オリジナル|Original|音质|高码率)/gi;
 
   let cleaned = raw
     .replace(noiseTagRegex, ' ')
@@ -27,77 +131,57 @@ function cleanTitleAndExtract(title, artist) {
     const artistInTitle = cleaned.replace(bookTitle, '').replace(noiseWordsRegex, ' ').replace(/\s+/g, ' ').trim();
     if (artistInTitle) {
       queries.push(bookTitle + ' ' + artistInTitle);
-      queries.push(artistInTitle + ' ' + bookTitle);
     }
     queries.push(bookTitle);
   }
 
+  const coreTitle = extractCoreTitle(cleaned.replace(noiseWordsRegex, ' '));
+  const cleanWithoutNoise = cleaned.replace(noiseWordsRegex, ' ').replace(/\s+/g, ' ').trim();
+
   // 若包含 " - " 或 " / " 分隔
   const dashMatch = raw.replace(noiseTagRegex, '').replace(noiseParenRegex, '').match(/([^-–—/|｜]+)\s*[-–—/|｜]\s*([^-–—/|｜]+)/);
   if (dashMatch) {
-    const p1 = dashMatch[1].replace(/[【】\[\]()（）《》]/g, ' ').replace(noiseWordsRegex, ' ').trim();
-    const p2 = dashMatch[2].replace(/[【】\[\]()（）《》]/g, ' ').replace(noiseWordsRegex, ' ').trim();
-    if (p1 && p2) {
-      queries.push(p1 + ' ' + p2);
-      queries.push(p2 + ' ' + p1);
-      queries.push(p2);
-      queries.push(p1);
-    }
+    const p1 = extractCoreTitle(dashMatch[1].replace(/[【】\[\]()（）《》]/g, ' ').replace(noiseWordsRegex, ' '));
+    const p2 = extractCoreTitle(dashMatch[2].replace(/[【】\[\]()（）《》]/g, ' ').replace(noiseWordsRegex, ' '));
+    if (p1 && p1.length >= 2) queries.push(p1);
+    if (p2 && p2.length >= 2) queries.push(p2);
   }
 
-  const cleanWithoutNoise = cleaned.replace(noiseWordsRegex, ' ').replace(/\s+/g, ' ').trim();
-  if (cleanWithoutNoise && !queries.includes(cleanWithoutNoise)) {
+  if (coreTitle && coreTitle.length >= 2 && !queries.includes(coreTitle)) {
+    queries.push(coreTitle);
+  }
+
+  if (cleanWithoutNoise && cleanWithoutNoise.length >= 2 && !queries.includes(cleanWithoutNoise)) {
     queries.push(cleanWithoutNoise);
   }
 
-  if (cleaned && !queries.includes(cleaned)) {
-    queries.push(cleaned);
-  }
-
-  if (rawArtist && !queries.includes(cleanWithoutNoise + ' ' + rawArtist)) {
-    queries.push(cleanWithoutNoise + ' ' + rawArtist);
+  if (rawArtist && coreTitle && !queries.includes(coreTitle + ' ' + rawArtist)) {
+    queries.push(coreTitle + ' ' + rawArtist);
   }
 
   return {
     bookTitle,
-    cleanTitle: cleanWithoutNoise || cleaned,
+    cleanTitle: coreTitle || cleanWithoutNoise || cleaned,
     cleanArtist: rawArtist,
     queries: [...new Set(queries.filter(q => q && q.length >= 2))]
   };
 }
 
-function matchSong(results, cleanTitle, bookTitle, query) {
-  if (!results || results.length === 0) return null;
-  const targetTitle = (bookTitle || cleanTitle).toLowerCase();
+// 按歌名/歌手构造搜索关键词序列（多源共用）
+function buildLyricKeywords(title, artist) {
+  const { bookTitle, cleanTitle, cleanArtist, queries } = cleanTitleAndExtract(title, artist);
+  return { keywords: queries, cleanTitle, cleanArtist, bookTitle };
+}
 
-  // 1. 歌名完全相等
-  let m = results.find(s => (s.name || '').toLowerCase() === targetTitle);
-  if (m) return m;
+// 从搜索结果里挑最佳匹配（严格校验，杜绝误匹配无关歌曲）
+function pickBestMatch(allResults, cleanTitle, cleanArtist, bookTitle = '') {
+  if (!allResults || !allResults.length) return null;
+  return allResults.find(s => isStrictMatch(s, cleanTitle, cleanArtist, bookTitle)) || null;
+}
 
-  // 2. 歌名包含目标或目标包含歌名
-  m = results.find(s => {
-    const sName = (s.name || '').toLowerCase();
-    return sName.includes(targetTitle) || targetTitle.includes(sName);
-  });
-  if (m) return m;
 
-  // 3. 结果包含搜索关键词的所有核心词
-  const qWords = query.toLowerCase().split(/\s+/).filter(w => w.length >= 2);
-  m = results.find(s => {
-    const combined = ((s.name || '') + ' ' + (s.artist || '')).toLowerCase();
-    return qWords.every(w => combined.includes(w));
-  });
-  if (m) return m;
-
-  // 4. 首条结果若与 targetTitle 共享关键词（>=2字符），进行保底匹配
-  const targetWords = targetTitle.split(/\s+/).filter(w => w.length >= 2);
-  const first = results[0];
-  const firstCombined = ((first.name || '') + ' ' + (first.artist || '')).toLowerCase();
-  if (targetWords.some(w => firstCombined.includes(w))) {
-    return first;
-  }
-
-  return null;
+function matchSong(results, cleanTitle, bookTitle, query, cleanArtist = '') {
+  return pickBestMatch(results, cleanTitle, cleanArtist, bookTitle);
 }
 
 /**
