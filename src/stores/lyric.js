@@ -216,7 +216,7 @@ export const useLyricStore = defineStore('lyric', {
       // 两个版本标记都过关才算命中：
       //   _lyricV3 缺失 = 旧解析器产物（romaji/translation 缺失）
       //   _lyricParserV < 4 = 旧解析规则产物（无时间戳变体 / 多时间戳 / [offset]）
-      if (data && data.lyrics.length > 0 && data._lyricV3 === true && data._lyricParserV >= 4) {
+      if (data && data.lyrics.length > 0 && data._lyricV3 === true && data._lyricParserV >= 5) {
         return data
       }
       return null

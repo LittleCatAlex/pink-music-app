@@ -47,21 +47,32 @@ function convertBiliSubtitleToLrc(body) {
  * @param {Array<object>} subtitles
  * @returns {{ main: object|null, trans: object|null }}
  */
+function isCreatorCC(s) {
+  if (!s) return false;
+  // B 站 AI 识别字幕标识：type === 1 或 lan 包含 ai- 或 ai_status !== 0 或 ai_type !== 0
+  if (s.type === 1) return false;
+  if (String(s.lan || '').toLowerCase().startsWith('ai-')) return false;
+  if (typeof s.ai_status === 'number' && s.ai_status !== 0) return false;
+  if (typeof s.ai_type === 'number' && s.ai_type !== 0) return false;
+  return true;
+}
+
 function pickSubtitles(subtitles) {
   if (!Array.isArray(subtitles) || subtitles.length === 0) return { main: null, trans: null };
 
+  // 只使用创作者上传/审核的真实 CC 字幕，坚决排除 B 站 AI 语音识别字幕
+  const creatorSubs = subtitles.filter(isCreatorCC);
+  if (creatorSubs.length === 0) return { main: null, trans: null };
+
   const isZh = (s) => (s.lan || '').toLowerCase().startsWith('zh') || (s.lan_doc || '').includes('中');
-  // 人工 CC 字幕优先于 AI 生成字幕
-  const manual = subtitles.filter(s => s.ai_type === 0 || s.type === 0);
-  const ai = subtitles.filter(s => s.ai_type !== 0 && s.type !== 0);
 
-  // 主字幕：人工中文 -> 人工其他 -> AI 中文 -> AI 其他
-  let main = manual.find(isZh) || manual[0] || ai.find(isZh) || ai[0];
+  // 主字幕：创作者中文 -> 创作者第一条
+  let main = creatorSubs.find(isZh) || creatorSubs[0];
 
-  // 辅助翻译字幕：如果有不同语言的字幕，作为 tv
+  // 辅助翻译字幕：不同语言的创作者字幕
   let trans = null;
   if (main) {
-    trans = subtitles.find(s => s !== main && s.lan !== main.lan) || null;
+    trans = creatorSubs.find(s => s !== main && s.lan !== main.lan) || null;
   }
 
   return { main, trans };
@@ -162,8 +173,8 @@ async function getBilibiliSubtitle(bvid, cid, bilibiliAPI, maxAttempts = 2) {
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
       let targetCid = cid;
-      // 如果没有 cid，尝试通过 pagelist 或 episodes 获取第一 P 的 cid
-      if (!targetCid) {
+      // 如果没有 cid 或 cid <= 1，尝试通过 pagelist 或 episodes 获取第一 P 的 cid
+      if (!targetCid || Number(targetCid) <= 1) {
         if (bilibiliAPI && typeof bilibiliAPI.getVideoEpisodes === 'function') {
           try {
             const ep = await bilibiliAPI.getVideoEpisodes(bvid);
@@ -293,6 +304,7 @@ module.exports = {
   convertBiliSubtitleToLrc,
   formatLrcTimestamp,
   pickSubtitles,
+  isCreatorCC,
   fetchSubtitleBody,
   resolveCookieHeader
 };

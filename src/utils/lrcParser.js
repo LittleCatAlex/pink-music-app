@@ -6,7 +6,7 @@
  *   - 字符串：纯 lrc 文本
  *   - 对象：{ lrc, rv, tv }（网易云 API 的原文/罗马音/翻译三路文本）
  * 输出：
- *   { lyrics: [{ time(ms), text, romaji?, translation? }], title, artist, _lyricV3: true, _lyricParserV: 4 }
+ *   { lyrics: [{ time(ms), text, romaji?, translation? }], title, artist, _lyricV3: true, _lyricParserV: 5 }
  *   按 time 升序排列；_lyricV3 / _lyricParserV 用于缓存版本识别（见 stores/lyric.js getCachedLyric）
  *   支持一行多时间戳（[t1][t2]词）与全局 [offset:±ms]（正 offset = 歌词提前，rv/tv 对齐一并生效）
  */
@@ -115,7 +115,7 @@ export function parseLyric(rawLyric) {
   // getCachedLyric 用该标记识别"旧 Bug 解析器产出的缓存"（romaji/translation 缺失），
   // 命中旧缓存视为过期重新拉取，否则修复后已缓存的歌仍然切不出翻译/罗马音。
   // _lyricParserV 为解析规则版本（4 = 多时间戳 + offset 符号修正），缓存据此失效重解析
-  return { lyrics, title, artist, _lyricV3: true, _lyricParserV: 4 }
+  return { lyrics, title, artist, _lyricV3: true, _lyricParserV: 5 }
 }
 
 /**
