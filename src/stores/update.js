@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 
-const REPO_RELEASES_URL = 'https://github.com/Rayson-Liu/pink-music-app/releases'
+const REPO_RELEASES_URL = 'https://github.com/LittleCatAlex/pink-music-app/releases'
 
 function escapeHtml(s) {
   return String(s)

@@ -2429,7 +2429,7 @@ ipcMain.handle('open-download-folder', async () => {
 // 打开 GitHub 链接
 ipcMain.handle('open-github', async () => {
   try {
-    await shell.openExternal('https://github.com/Rayson-Liu/pink-music-app');
+    await shell.openExternal('https://github.com/LittleCatAlex/pink-music-app');
     return { code: 0 };
   } catch (error) {
     console.error('打开 GitHub 失败:', error);

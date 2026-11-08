@@ -11,7 +11,7 @@ const path = require('path');
 const axios = require('axios');
 const { app } = require('electron');
 
-const REPO = 'Rayson-Liu/pink-music-app';
+const REPO = 'LittleCatAlex/pink-music-app';
 const API_URL = `https://api.github.com/repos/${REPO}/releases/latest`;
 const RELEASES_PAGE = `https://github.com/${REPO}/releases`;
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
