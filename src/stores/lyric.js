@@ -64,6 +64,7 @@ export const useLyricStore = defineStore('lyric', {
     currentLineIndex: -1,
     isLyricLoading: false,
     lyricError: '',
+    lyricNeedLogin: false,
     lyricSource: '',
     showLyricPanel: true,
     // 由 getCacheKey(bvid, cid, author, title) 索引
@@ -151,6 +152,7 @@ export const useLyricStore = defineStore('lyric', {
       this.currentLyric = normalized
       this.currentLineIndex = -1
       this.lyricError = ''
+      if (normalized) this.lyricNeedLogin = false
       if (!normalized) this.lyricSource = ''
     },
     setLoadedHash(hash) { this.loadedHash = hash },
@@ -308,6 +310,7 @@ export const useLyricStore = defineStore('lyric', {
         this.setCurrentLyric(null)
         this.setLoadedHash('')
         this.lyricError = ''
+        this.lyricNeedLogin = false
       }
 
       const task = this.fetchLyric(bvid, cid, title, artist, {
@@ -334,6 +337,7 @@ export const useLyricStore = defineStore('lyric', {
           return { success: false, error: 'stale' }
         }
         this.setCurrentLyric(cached)
+        this.lyricNeedLogin = false
         this.setLoadedHash(cacheKey)
         const source = this.lyricSources[cacheKey] || cached.source || 'auto'
         this.lyricSource = source === 'manual' ? 'manual' : 'auto'
@@ -380,11 +384,18 @@ export const useLyricStore = defineStore('lyric', {
           this.cacheLyric(bvid, cid, title, artist, lyric, source)
           return { success: true, fromCache: false }
         } else {
-          this.setLyricError('沒有歌詞')
-          return { success: false, error: result?.message }
+          if (result?.needLogin) {
+            this.lyricNeedLogin = true
+            this.setLyricError('B站 CC 字幕需登录后使用')
+          } else {
+            this.lyricNeedLogin = false
+            this.setLyricError('沒有歌詞')
+          }
+          return { success: false, error: result?.message, needLogin: result?.needLogin }
         }
       } catch (error) {
         if (this.currentKey === cacheKey) {
+          this.lyricNeedLogin = false
           this.setLyricError('沒有歌詞')
         }
         return { success: false, error: error.message }

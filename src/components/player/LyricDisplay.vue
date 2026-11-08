@@ -23,6 +23,9 @@ const props = defineProps({
 
 const lyricStore = useLyricStore()
 const displayLyricError = computed(() => {
+  if (lyricStore.lyricNeedLogin || lyricStore.lyricError?.includes('登录') || lyricStore.lyricError?.includes('登入')) {
+    return '此视频含 B 站 CC 字幕，需登录 B 站账号后查看'
+  }
   const err = lyricStore.lyricError
   if (!err) return '沒有歌詞'
   if (['未找到歌词', '暂无歌词', '歌词为空', '获取歌词失败', 'empty lyric', 'no track', '没有歌词', '沒有歌詞'].includes(err) || err.includes('歌词') || err.includes('lyric')) {
@@ -183,6 +186,11 @@ function handleLyricClick(lyric) {
   if (!lyric || !props.onSeek) return
   const adjusted = lyric.time - lyricStore.currentOffset
   props.onSeek(adjusted / 1000)
+}
+
+// === 登录引导 ===
+function handleLogin() {
+  window.dispatchEvent(new CustomEvent('pink-music:open-login'))
 }
 
 // === 重试 ===
@@ -416,6 +424,7 @@ function getSubLines(line) {
       <div v-else-if="lyricStore.lyricError" class="lyric-state err">
         <p>{{ displayLyricError }}</p>
         <div class="err-actions">
+          <button v-if="lyricStore.lyricNeedLogin" class="ebtn ebtn-primary" @click="handleLogin">登录 B 站</button>
           <button class="ebtn" @click="handleRetry">重试</button>
           <button class="ebtn" @click="openSearch">搜索歌词</button>
         </div>
@@ -954,6 +963,15 @@ function getSubLines(line) {
 .ebtn:hover {
   background: rgba(var(--primary-color-rgb), 0.22);
   color: var(--primary-color);
+}
+.ebtn.ebtn-primary {
+  background: var(--primary-color);
+  color: #fff;
+  font-weight: 500;
+}
+.ebtn.ebtn-primary:hover {
+  filter: brightness(1.1);
+  color: #fff;
 }
 
 .spinner {

@@ -472,6 +472,7 @@ export function setupWebElectronAPI() {
 
         async getLyric({ bvid, cid, title, artist, preferredSource }) {
       try {
+        let needLogin = false;
         // 若提供了 bvid，且 preferredSource 为 bilibili 或未指定，优先尝试从 B 站获取 CC 字幕
         if (bvid && (preferredSource === 'bilibili' || !preferredSource)) {
           try {
@@ -489,6 +490,9 @@ export function setupWebElectronAPI() {
             if (targetCid && targetCid > 1) {
               try {
                 const subRes = await requestApi('/api/x/player/wbi/v2?bvid=' + encodeURIComponent(bvid) + '&cid=' + encodeURIComponent(targetCid));
+                if (subRes?.data?.need_login_subtitle) {
+                  needLogin = true;
+                }
                 if (Array.isArray(subRes?.data?.subtitle?.subtitles) && subRes.data.subtitle.subtitles.length > 0) {
                   subtitles = subRes.data.subtitle.subtitles;
                 }
@@ -499,6 +503,9 @@ export function setupWebElectronAPI() {
             if (!subtitles && targetCid && targetCid > 1) {
               try {
                 const subResV2 = await requestApi('/api/x/player/v2?bvid=' + encodeURIComponent(bvid) + '&cid=' + encodeURIComponent(targetCid));
+                if (subResV2?.data?.need_login_subtitle) {
+                  needLogin = true;
+                }
                 if (Array.isArray(subResV2?.data?.subtitle?.subtitles) && subResV2.data.subtitle.subtitles.length > 0) {
                   subtitles = subResV2.data.subtitle.subtitles;
                 }
@@ -521,27 +528,48 @@ export function setupWebElectronAPI() {
               const manual = subtitles.filter(s => s.ai_type === 0 || s.type === 0);
               const ai = subtitles.filter(s => s.ai_type !== 0 && s.type !== 0);
               const main = manual.find(isZh) || manual[0] || ai.find(isZh) || ai[0];
-              if (main && main.subtitle_url) {
-                const url = main.subtitle_url.startsWith('//') ? 'https:' + main.subtitle_url : main.subtitle_url;
-                const safeUrl = proxyAudioUrl(url);
-                const res = await fetch(safeUrl);
-                const data = await res.json();
-                if (data && Array.isArray(data.body) && data.body.length > 0) {
-                  const lines = [];
-                  for (const item of data.body) {
-                    if (!item || typeof item.from !== 'number' || item.content === undefined || item.content === null) continue;
-                    const text = String(item.content).replace(/[\r\n]+/g, ' ').trim();
-                    if (!text) continue;
-                    const totalMs = Math.max(0, Math.round(Number(item.from) * 1000));
-                    const m = Math.floor(totalMs / 60000);
-                    const s = Math.floor((totalMs % 60000) / 1000);
-                    const cs = Math.floor((totalMs % 1000) / 10);
-                    lines.push('[' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0') + '.' + String(cs).padStart(2, '0') + ']' + text);
-                  }
-                  if (lines.length > 0) {
-                    return { code: 0, data: { lrc: lines.join('\n'), rv: '', tv: '' }, source: 'bilibili' };
-                  }
+
+              let trans = null;
+              if (subtitles.length > 1) {
+                if (!isZh(main)) {
+                  trans = subtitles.find(s => s !== main && isZh(s));
+                } else {
+                  trans = subtitles.find(s => s !== main && !isZh(s));
                 }
+              }
+
+              const parseSubUrl = async (subObj) => {
+                if (!subObj) return '';
+                const rawUrl = subObj.subtitle_url || subObj.subtitle_url_v2;
+                if (!rawUrl) return '';
+                const url = rawUrl.startsWith('//') ? 'https:' + rawUrl : rawUrl;
+                try {
+                  const res = await fetch(url);
+                  const data = await res.json();
+                  if (data && Array.isArray(data.body) && data.body.length > 0) {
+                    const lines = [];
+                    for (const item of data.body) {
+                      if (!item || typeof item.from !== 'number' || item.content === undefined || item.content === null) continue;
+                      const text = String(item.content).replace(/[\r\n]+/g, ' ').trim();
+                      if (!text) continue;
+                      const totalMs = Math.max(0, Math.round(Number(item.from) * 1000));
+                      const m = Math.floor(totalMs / 60000);
+                      const s = Math.floor((totalMs % 60000) / 1000);
+                      const cs = Math.floor((totalMs % 1000) / 10);
+                      lines.push('[' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0') + '.' + String(cs).padStart(2, '0') + ']' + text);
+                    }
+                    return lines.join('\n');
+                  }
+                } catch (subErr) {
+                  console.warn('[Web] 解析字幕 JSON 失败:', subErr.message);
+                }
+                return '';
+              };
+
+              const mainLrc = await parseSubUrl(main);
+              const tvLrc = trans ? await parseSubUrl(trans) : '';
+              if (mainLrc) {
+                return { code: 0, data: { lrc: mainLrc, rv: '', tv: tvLrc }, source: 'bilibili' };
               }
             }
           } catch (e) {
@@ -563,6 +591,9 @@ export function setupWebElectronAPI() {
               }
             }
           }
+        }
+        if (needLogin) {
+          return { code: -1, needLogin: true, message: 'B站 CC 字幕需登录后使用' };
         }
         return { code: -1, message: '沒有歌詞' };
       } catch (err) {

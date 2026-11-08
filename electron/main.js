@@ -241,6 +241,17 @@ class BilibiliAPI {
     });
   }
 
+  async ensureWbiKeys() {
+    if (wbiKeysCache.imgKey && wbiKeysCache.subKey && (Date.now() - wbiKeysCache.updatedAt < 3600000)) {
+      return;
+    }
+    try {
+      await this.getUserNavInfo();
+    } catch (e) {
+      dlog('[ensureWbiKeys] 获取 wbi keys 失败:', e.message);
+    }
+  }
+
   async refreshCookiesFromSession() {
     // 三源合并：JSON 持久化（冷启动） < session 内存（热路径）< 文件最新落盘值
     let fileCookies = {};
@@ -403,6 +414,7 @@ class BilibiliAPI {
   async getVideoSubtitles(bvid, cid) {
     try {
       await this.refreshCookiesFromSession();
+      await this.ensureWbiKeys();
       dlog('获取视频字幕:', bvid, cid);
       let targetCid = cid;
       if (!targetCid && bvid) {
@@ -413,6 +425,7 @@ class BilibiliAPI {
       }
       if (!targetCid) return { code: -1, message: '缺少 cid' };
 
+      let needLogin = false;
       // 1. 优先请求 /x/player/wbi/v2（带重试与 15s 超时）
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
@@ -420,13 +433,17 @@ class BilibiliAPI {
             params: { bvid, cid: targetCid },
             timeout: 15000
           });
+          if (data?.data?.need_login_subtitle) {
+            needLogin = true;
+          }
           const subtitles = data?.data?.subtitle?.subtitles;
           if (Array.isArray(subtitles) && subtitles.length > 0) {
-            return { code: 0, data: { subtitles } };
+            return { code: 0, data: { subtitles, needLogin } };
           }
         } catch (e) {
           dlog('[getVideoSubtitles] wbi/v2 尝试失败:', e.message);
         }
+        if (needLogin) break;
         if (attempt === 0) await new Promise(r => setTimeout(r, 400));
       }
 
@@ -436,9 +453,12 @@ class BilibiliAPI {
           params: { bvid, cid: targetCid },
           timeout: 15000
         });
+        if (dataV2?.data?.need_login_subtitle) {
+          needLogin = true;
+        }
         const subtitlesV2 = dataV2?.data?.subtitle?.subtitles;
         if (Array.isArray(subtitlesV2) && subtitlesV2.length > 0) {
-          return { code: 0, data: { subtitles: subtitlesV2 } };
+          return { code: 0, data: { subtitles: subtitlesV2, needLogin } };
         }
       } catch (e) {
         dlog('[getVideoSubtitles] player/v2 尝试失败:', e.message);
@@ -452,13 +472,13 @@ class BilibiliAPI {
         });
         const viewSubs = viewData?.data?.subtitle?.list || viewData?.data?.subtitle?.subtitles;
         if (Array.isArray(viewSubs) && viewSubs.length > 0) {
-          return { code: 0, data: { subtitles: viewSubs } };
+          return { code: 0, data: { subtitles: viewSubs, needLogin } };
         }
       } catch (e) {
         dlog('[getVideoSubtitles] view 尝试失败:', e.message);
       }
 
-      return { code: 0, data: { subtitles: [] } };
+      return { code: 0, data: { subtitles: [], needLogin } };
     } catch (error) {
       console.error('获取视频字幕失败:', error.message);
       return { code: -1, message: error.message };
@@ -2833,14 +2853,21 @@ ipcMain.handle('get-lyric', async (event, { bvid, cid, title, artist, preferredS
     const sourceOrder = resolveLyricSourceOrder(preferredSource);
     dlog('歌词源尝试顺序:', sourceOrder.join(' → '));
 
+    let bilibiliNeedLogin = false;
     for (const source of sourceOrder) {
       if (source === 'bilibili') {
         if (bvid) {
           // B 站 CC 字幕：带内部多接口与重试；若初次未取到，稍等再试一次（防止因初始并发加载慢而误跳过 CC 字幕）
           let biliResult = await getBilibiliSubtitle(bvid, cid, bilibiliAPI);
+          if (biliResult?.needLogin) {
+            bilibiliNeedLogin = true;
+          }
           if (!biliResult && bvid) {
             await new Promise(r => setTimeout(r, 600));
             biliResult = await getBilibiliSubtitle(bvid, cid, bilibiliAPI);
+            if (biliResult?.needLogin) {
+              bilibiliNeedLogin = true;
+            }
           }
           if (biliResult && biliResult.lrc) {
             dlog('[bilibili] 成功获取 CC 字幕，长度:', biliResult.lrc.length);
@@ -2853,6 +2880,14 @@ ipcMain.handle('get-lyric', async (event, { bvid, cid, title, artist, preferredS
           return { code: 0, data: result.data, source: result.source };
         }
       }
+    }
+
+    if (bilibiliNeedLogin) {
+      return {
+        code: -1,
+        needLogin: true,
+        message: 'B站 CC 字幕需登录后使用'
+      };
     }
 
     return {

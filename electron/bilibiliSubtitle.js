@@ -9,6 +9,9 @@
  */
 
 const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
 
 const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
@@ -97,19 +100,65 @@ async function fetchSubtitleBody(subtitleUrl, retries = 2, delayMs = 500) {
   return null;
 }
 
+/** 从 bilibiliAPI 实例或本地落盘文件中获取可用 Cookie */
+function resolveCookieHeader(bilibiliAPI) {
+  if (typeof bilibiliAPI === 'string' && bilibiliAPI.trim()) {
+    return bilibiliAPI.trim();
+  }
+  if (Array.isArray(bilibiliAPI)) {
+    return bilibiliAPI.filter(Boolean).join('; ');
+  }
+  const cookieObj = (bilibiliAPI && typeof bilibiliAPI.cookies === 'object')
+    ? bilibiliAPI.cookies
+    : (bilibiliAPI && typeof bilibiliAPI === 'object' && typeof bilibiliAPI.request !== 'function' ? bilibiliAPI : null);
+
+  if (cookieObj && typeof cookieObj === 'object') {
+    const header = Object.entries(cookieObj)
+      .filter(([_, v]) => v != null && v !== '')
+      .map(([k, v]) => `${k}=${v}`)
+      .join('; ');
+    if (header) return header;
+  }
+
+  try {
+    const home = os.homedir();
+    const candidatePaths = [
+      path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'pink-music', 'bilibili-cookies.json'),
+      path.join(home, 'Library', 'Application Support', 'pink-music', 'bilibili-cookies.json'),
+      path.join(home, '.config', 'pink-music', 'bilibili-cookies.json')
+    ];
+    for (const p of candidatePaths) {
+      if (fs.existsSync(p)) {
+        const raw = JSON.parse(fs.readFileSync(p, 'utf-8'));
+        if (raw && typeof raw === 'object') {
+          const header = Object.entries(raw)
+            .filter(([_, v]) => v != null && v !== '')
+            .map(([k, v]) => `${k}=${v}`)
+            .join('; ');
+          if (header) return header;
+        }
+      }
+    }
+  } catch (_) {}
+
+  return '';
+}
+
 /**
  * 获取 B 站 CC 字幕并转换为 { lrc, rv, tv }
- * 包含多接口回退（wbi/v2 -> player/v2 -> view）以及失败自动重试，
+ * 包含多接口回退（wbi/v2 -> player/v2）以及失败自动重试，
  * 防止因首次网络延迟或高并发请求而误回退到其他歌词源。
  *
  * @param {string} bvid
  * @param {number|string} [cid]
  * @param {object} [bilibiliAPI] 可选的 BilibiliAPI 实例
  * @param {number} [maxAttempts=2]
- * @returns {Promise<{ lrc: string, rv: string, tv: string }|null>}
+ * @returns {Promise<{ lrc: string, rv: string, tv: string, needLogin?: boolean }|null>}
  */
 async function getBilibiliSubtitle(bvid, cid, bilibiliAPI, maxAttempts = 2) {
   if (!bvid) return null;
+  let needLogin = false;
+
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
       let targetCid = cid;
@@ -138,84 +187,91 @@ async function getBilibiliSubtitle(bvid, cid, bilibiliAPI, maxAttempts = 2) {
 
       let subtitleData = null;
 
-      // 1. 优先通过主进程 bilibiliAPI 获取
+      // 1. 优先通过主进程 bilibiliAPI 获取（自带会话与凭证）
       if (bilibiliAPI && typeof bilibiliAPI.getVideoSubtitles === 'function' && targetCid) {
         try {
           const res = await bilibiliAPI.getVideoSubtitles(bvid, targetCid);
+          if (res?.data?.needLogin) {
+            needLogin = true;
+          }
           if (res?.code === 0 && Array.isArray(res.data?.subtitles) && res.data.subtitles.length > 0) {
             subtitleData = res.data.subtitles;
           }
         } catch (_) {}
       }
 
-      // 2. 若 bilibiliAPI 未取到或不可用，直连请求 B 站播放器 v2 接口（先尝试 wbi/v2，再尝试 v2）
+      // 若 bilibiliAPI 已明确告知 needLogin 且无字幕，立即返回告知上层需要登录
+      if (needLogin && (!subtitleData || subtitleData.length === 0)) {
+        return { lrc: '', rv: '', tv: '', needLogin: true };
+      }
+
+      // 2. 若 bilibiliAPI 未取到或不可用，直连请求 B 站播放器 v2 接口（先尝试 wbi/v2，再尝试 v2），注入 Cookie
       if (!subtitleData && targetCid) {
+        const cookieHeader = resolveCookieHeader(bilibiliAPI);
+        const reqHeaders = {
+          'User-Agent': BROWSER_UA,
+          'Referer': `https://www.bilibili.com/video/${bvid}`
+        };
+        if (cookieHeader) {
+          reqHeaders['Cookie'] = cookieHeader;
+        }
+
         try {
           const res = await axios.get(`https://api.bilibili.com/x/player/wbi/v2?bvid=${encodeURIComponent(bvid)}&cid=${encodeURIComponent(targetCid)}`, {
             timeout: 12000,
-            headers: {
-              'User-Agent': BROWSER_UA,
-              'Referer': `https://www.bilibili.com/video/${bvid}`
-            }
+            headers: reqHeaders
           });
+          if (res.data?.data?.need_login_subtitle) {
+            needLogin = true;
+          }
           const subs = res.data?.data?.subtitle?.subtitles;
           if (Array.isArray(subs) && subs.length > 0) {
             subtitleData = subs;
           }
         } catch (_) {}
-      }
 
-      if (!subtitleData && targetCid) {
-        try {
-          const resV2 = await axios.get(`https://api.bilibili.com/x/player/v2?bvid=${encodeURIComponent(bvid)}&cid=${encodeURIComponent(targetCid)}`, {
-            timeout: 12000,
-            headers: {
-              'User-Agent': BROWSER_UA,
-              'Referer': `https://www.bilibili.com/video/${bvid}`
+        if (!subtitleData && !needLogin) {
+          try {
+            const resV2 = await axios.get(`https://api.bilibili.com/x/player/v2?bvid=${encodeURIComponent(bvid)}&cid=${encodeURIComponent(targetCid)}`, {
+              timeout: 12000,
+              headers: reqHeaders
+            });
+            if (resV2.data?.data?.need_login_subtitle) {
+              needLogin = true;
             }
-          });
-          const subsV2 = resV2.data?.data?.subtitle?.subtitles;
-          if (Array.isArray(subsV2) && subsV2.length > 0) {
-            subtitleData = subsV2;
-          }
-        } catch (_) {}
-      }
-
-      // 3. 兜底尝试 /x/web-interface/view
-      if (!subtitleData) {
-        try {
-          const viewRes = await axios.get(`https://api.bilibili.com/x/web-interface/view?bvid=${encodeURIComponent(bvid)}`, {
-            timeout: 12000,
-            headers: {
-              'User-Agent': BROWSER_UA,
-              'Referer': `https://www.bilibili.com/video/${bvid}`
+            const subsV2 = resV2.data?.data?.subtitle?.subtitles;
+            if (Array.isArray(subsV2) && subsV2.length > 0) {
+              subtitleData = subsV2;
             }
-          });
-          const viewSubs = viewRes.data?.data?.subtitle?.list || viewRes.data?.data?.subtitle?.subtitles;
-          if (Array.isArray(viewSubs) && viewSubs.length > 0) {
-            subtitleData = viewSubs;
-          }
-        } catch (_) {}
+          } catch (_) {}
+        }
       }
 
       if (Array.isArray(subtitleData) && subtitleData.length > 0) {
         const { main, trans } = pickSubtitles(subtitleData);
-        if (main && main.subtitle_url) {
-          const mainBody = await fetchSubtitleBody(main.subtitle_url);
+        const mainUrl = main ? (main.subtitle_url || main.subtitle_url_v2) : null;
+        if (main && mainUrl) {
+          const mainBody = await fetchSubtitleBody(mainUrl);
           if (mainBody && mainBody.length > 0) {
             const lrc = convertBiliSubtitleToLrc(mainBody);
             if (lrc) {
               let tv = '';
-              if (trans && trans.subtitle_url) {
-                const transBody = await fetchSubtitleBody(trans.subtitle_url);
+              const transUrl = trans ? (trans.subtitle_url || trans.subtitle_url_v2) : null;
+              if (trans && transUrl) {
+                const transBody = await fetchSubtitleBody(transUrl);
                 if (transBody && transBody.length > 0) {
                   tv = convertBiliSubtitleToLrc(transBody);
                 }
               }
-              return { lrc, rv: '', tv };
+              return { lrc, rv: '', tv, needLogin: false };
             }
           }
         }
+      }
+
+      // 如果检测到未登录导致无法返回字幕，退出重试
+      if (needLogin) {
+        return { lrc: '', rv: '', tv: '', needLogin: true };
       }
 
       // 若首次尝试失败，在重试前等待短暂避退
@@ -237,5 +293,6 @@ module.exports = {
   convertBiliSubtitleToLrc,
   formatLrcTimestamp,
   pickSubtitles,
-  fetchSubtitleBody
+  fetchSubtitleBody,
+  resolveCookieHeader
 };

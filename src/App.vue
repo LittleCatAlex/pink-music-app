@@ -1867,6 +1867,10 @@ async function handleLoginSuccess() {
   if (!userStore.userInfo) {
     await userStore.fetchUserInfo()
   }
+  // 若当前曲目因为未登录 B 站而未能获取 CC 字幕，登录成功后自动重新加载歌词
+  if (lyricStore.lyricNeedLogin && playerStore.currentTrack) {
+    lyricStore.loadLyricForTrack(playerStore.currentTrack)
+  }
 }
 
 async function handleSyncFavorites() {

@@ -5,7 +5,9 @@ const assert = require('assert');
 const {
   formatLrcTimestamp,
   convertBiliSubtitleToLrc,
-  pickSubtitles
+  pickSubtitles,
+  resolveCookieHeader,
+  getBilibiliSubtitle
 } = require('../electron/bilibiliSubtitle');
 const {
   LYRIC_SOURCES,
@@ -186,5 +188,33 @@ assert.strictEqual(matchRelated.id, '200', 'Should match exact song');
 
 console.log('✓ Strict keyword generation and relevance matching tests passed.');
 
-console.log('[test:subtitle] All Bilibili CC subtitle tests passed!');
-process.exit(0);
+// Test 6: resolveCookieHeader tests
+assert.strictEqual(resolveCookieHeader({ SESSDATA: 'abc', bili_jct: 'def' }), 'SESSDATA=abc; bili_jct=def');
+assert.strictEqual(resolveCookieHeader(['SESSDATA=abc', 'bili_jct=def']), 'SESSDATA=abc; bili_jct=def');
+assert.strictEqual(resolveCookieHeader({ cookies: { SESSDATA: 'abc' } }), 'SESSDATA=abc');
+assert.strictEqual(typeof resolveCookieHeader(null), 'string');
+console.log('✓ resolveCookieHeader tests passed.');
+
+// Test 7: subtitle_url_v2 fallback and needLogin handling
+const mockV2Sub = [
+  { id: 99, lan: 'zh-CN', lan_doc: '中文', ai_type: 0, type: 0, subtitle_url_v2: '//sub/v2.json' }
+];
+const pickedV2 = pickSubtitles(mockV2Sub);
+assert.strictEqual(pickedV2.main.id, 99);
+assert.strictEqual(pickedV2.main.subtitle_url_v2, '//sub/v2.json');
+
+(async () => {
+  const mockApiNeedLogin = {
+    getVideoSubtitles: async () => ({
+      code: 0,
+      data: { subtitles: [], needLogin: true }
+    })
+  };
+  const res = await getBilibiliSubtitle('BVmock', 12345, mockApiNeedLogin);
+  assert.strictEqual(res.needLogin, true, 'Should preserve needLogin flag');
+  assert.strictEqual(res.lrc, '', 'LRC should be empty when login is needed');
+  console.log('✓ needLogin and subtitle_url_v2 fallback tests passed.');
+
+  console.log('[test:subtitle] All Bilibili CC subtitle tests passed!');
+  process.exit(0);
+})();
