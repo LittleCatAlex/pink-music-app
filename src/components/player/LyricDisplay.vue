@@ -197,7 +197,7 @@ function handleLogin() {
 function handleRetry() {
   const track = playerStore.currentTrack
   if (!track) return
-  lyricStore.loadLyricForTrack(track)
+  lyricStore.loadLyricForTrack(track, { force: true })
 }
 
 // === 滚轮手动滚动 ===
@@ -356,7 +356,7 @@ async function handleResetManual() {
   const track = playerStore.currentTrack
   if (!track) return
   await lyricStore.resetManualLyric()
-  await lyricStore.loadLyricForTrack(track)
+  await lyricStore.loadLyricForTrack(track, { force: true })
 }
 
 onMounted(() => {

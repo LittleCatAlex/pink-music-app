@@ -20,10 +20,13 @@ function cacheFile() {
   return path.join(app.getPath('userData'), 'update-check.json');
 }
 
-function readCache() {
+function readCache(currentVersion) {
   try {
     const raw = JSON.parse(fs.readFileSync(cacheFile(), 'utf8'));
     if (raw && raw.at && raw.data && Date.now() - raw.at < CACHE_TTL_MS) {
+      if (currentVersion && raw.data.currentVersion && raw.data.currentVersion !== currentVersion) {
+        return null;
+      }
       return raw;
     }
   } catch (_) { /* 缓存缺失/损坏按无缓存处理 */ }
@@ -87,8 +90,16 @@ async function checkForUpdates(opts = {}) {
   const currentVersion = app.getVersion();
 
   if (!force) {
-    const cached = readCache();
-    if (cached) return { ...cached.data, cached: true };
+    const cached = readCache(currentVersion);
+    if (cached) {
+      const latestVersion = cached.data.latest?.version;
+      return {
+        ...cached.data,
+        currentVersion,
+        hasUpdate: latestVersion ? isNewer(latestVersion, currentVersion) : false,
+        cached: true
+      };
+    }
   }
 
   try {
@@ -123,4 +134,4 @@ async function checkForUpdates(opts = {}) {
   }
 }
 
-module.exports = { checkForUpdates, REPO, RELEASES_PAGE };
+module.exports = { checkForUpdates, REPO, RELEASES_PAGE, parseVersion, isNewer, readCache };

@@ -288,7 +288,7 @@ export const useLyricStore = defineStore('lyric', {
      * - 同 key 加载中 → 合并为同一次请求
      * - 切歌（key 变化）才清空当前歌词
      */
-    async loadLyricForTrack(track) {
+    async loadLyricForTrack(track, { force = false } = {}) {
       if (!track) return { success: false, error: 'no track' }
       const isLocal = track.source === 'local' || !!track.filePath
       // 本地曲用稳定 id 作身份；B 站曲沿用 bvid
@@ -300,15 +300,15 @@ export const useLyricStore = defineStore('lyric', {
       const artist = track.author || ''
       const key = this.getCacheKey(bvid, cid, title, artist)
 
-      if (this.currentKey === key && this.currentLyric && this.loadedHash === key) {
+      if (!force && this.currentKey === key && this.currentLyric && this.loadedHash === key) {
         return { success: true, fromCache: true, deduped: true }
       }
-      if (_inflightKey === key && _inflight) {
+      if (!force && _inflightKey === key && _inflight) {
         return _inflight
       }
 
       this.currentKey = key
-      if (this.loadedHash !== key) {
+      if (force || this.loadedHash !== key) {
         this.setCurrentLyric(null)
         this.setLoadedHash('')
         this.lyricError = ''
@@ -317,7 +317,8 @@ export const useLyricStore = defineStore('lyric', {
 
       const task = this.fetchLyric(bvid, cid, title, artist, {
         isLocal,
-        lyricPath: track.lyricPath || ''
+        lyricPath: track.lyricPath || '',
+        force
       })
       _inflightKey = key
       _inflight = task.finally(() => {
@@ -329,10 +330,15 @@ export const useLyricStore = defineStore('lyric', {
       return _inflight
     },
 
-    async fetchLyric(bvid, cid, title, artist, { isLocal = false, lyricPath = '' } = {}) {
+    async fetchLyric(bvid, cid, title, artist, { isLocal = false, lyricPath = '', force = false } = {}) {
       const cacheKey = this.getCacheKey(bvid, cid, title, artist)
+      if (force) {
+        delete this.lyricCache[cacheKey]
+        delete this.lyricSources[cacheKey]
+        this.persist()
+      }
       // 本地曲：同名 .lrc 是唯一事实源，每次都从磁盘重读（用户改了歌词立即生效，不缓存）
-      const cached = isLocal ? null : this.getCachedLyric(bvid, cid, title, artist)
+      const cached = (isLocal || force) ? null : this.getCachedLyric(bvid, cid, title, artist)
       if (cached) {
         // 过期响应防护：期间已切歌则丢弃
         if (this.currentKey !== cacheKey) {
