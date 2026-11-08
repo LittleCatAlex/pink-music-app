@@ -91,7 +91,7 @@ async function fetchSubtitleBody(subtitleUrl, retries = 2, delayMs = 500) {
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const res = await axios.get(url, {
-        timeout: 15000,
+        timeout: 6000,
         headers: {
           'User-Agent': BROWSER_UA
         }
@@ -216,8 +216,8 @@ async function getBilibiliSubtitle(bvid, cid, bilibiliAPI, maxAttempts = 2) {
         return { lrc: '', rv: '', tv: '', needLogin: true };
       }
 
-      // 2. 若 bilibiliAPI 未取到或不可用，直连请求 B 站播放器 v2 接口（先尝试 wbi/v2，再尝试 v2），注入 Cookie
-      if (!subtitleData && targetCid) {
+      // 2. 若 bilibiliAPI 未提供或异常不可用，直连请求 B 站播放器 v2 接口（注入 Cookie 兜底）
+      if (!subtitleData && targetCid && (!bilibiliAPI || typeof bilibiliAPI.getVideoSubtitles !== 'function')) {
         const cookieHeader = resolveCookieHeader(bilibiliAPI);
         const reqHeaders = {
           'User-Agent': BROWSER_UA,

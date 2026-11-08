@@ -2515,17 +2515,10 @@ ipcMain.handle('get-lyric', async (event, { bvid, cid, title, artist, preferredS
     for (const source of sourceOrder) {
       if (source === 'bilibili') {
         if (bvid) {
-          // B 站 CC 字幕：带内部多接口与重试；若初次未取到，稍等再试一次（防止因初始并发加载慢而误跳过 CC 字幕）
-          let biliResult = await getBilibiliSubtitle(bvid, cid, bilibiliAPI);
+          // B 站 CC 字幕（已内置超时与安全重试，避免冗余重发拖慢后续源 fallback）
+          const biliResult = await getBilibiliSubtitle(bvid, cid, bilibiliAPI);
           if (biliResult?.needLogin) {
             bilibiliNeedLogin = true;
-          }
-          if (!biliResult && bvid) {
-            await new Promise(r => setTimeout(r, 600));
-            biliResult = await getBilibiliSubtitle(bvid, cid, bilibiliAPI);
-            if (biliResult?.needLogin) {
-              bilibiliNeedLogin = true;
-            }
           }
           if (biliResult && biliResult.lrc) {
             dlog('[bilibili] 成功获取 CC 字幕，长度:', biliResult.lrc.length);

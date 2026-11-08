@@ -53,6 +53,7 @@ const initial = peekLyrics() || { cache: {}, offsets: {}, sources: {} }
 // 并发加载去重（模块级，不进 Pinia state / 持久化）
 let _inflightKey = ''
 let _inflight = null
+let _loadSeq = 0
 
 // 启动期串行化：load() 记录自身 promise，persist() 在它未完成前先等它，
 // 避免 load 读回的旧快照覆盖掉内存里的新写入（如刚调整的歌词偏移）
@@ -301,6 +302,7 @@ export const useLyricStore = defineStore('lyric', {
       const key = this.getCacheKey(bvid, cid, title, artist)
 
       if (!force && this.currentKey === key && this.currentLyric && this.loadedHash === key) {
+        this.setIsLyricLoading(false)
         return { success: true, fromCache: true, deduped: true }
       }
       if (!force && _inflightKey === key && _inflight) {
@@ -315,10 +317,12 @@ export const useLyricStore = defineStore('lyric', {
         this.lyricNeedLogin = false
       }
 
+      const currentSeq = ++_loadSeq
       const task = this.fetchLyric(bvid, cid, title, artist, {
         isLocal,
         lyricPath: track.lyricPath || '',
-        force
+        force,
+        seq: currentSeq
       })
       _inflightKey = key
       _inflight = task.finally(() => {
@@ -330,7 +334,7 @@ export const useLyricStore = defineStore('lyric', {
       return _inflight
     },
 
-    async fetchLyric(bvid, cid, title, artist, { isLocal = false, lyricPath = '', force = false } = {}) {
+    async fetchLyric(bvid, cid, title, artist, { isLocal = false, lyricPath = '', force = false, seq = 0 } = {}) {
       const cacheKey = this.getCacheKey(bvid, cid, title, artist)
       if (force) {
         delete this.lyricCache[cacheKey]
@@ -342,6 +346,7 @@ export const useLyricStore = defineStore('lyric', {
       if (cached) {
         // 过期响应防护：期间已切歌则丢弃
         if (this.currentKey !== cacheKey) {
+          if (!seq || seq === _loadSeq) this.setIsLyricLoading(false)
           return { success: false, error: 'stale' }
         }
         this.setCurrentLyric(cached)
@@ -349,6 +354,7 @@ export const useLyricStore = defineStore('lyric', {
         this.setLoadedHash(cacheKey)
         const source = this.lyricSources[cacheKey] || cached.source || 'auto'
         this.lyricSource = source === 'manual' ? 'manual' : 'auto'
+        this.setIsLyricLoading(false)
         return { success: true, fromCache: true }
       }
 
@@ -408,8 +414,8 @@ export const useLyricStore = defineStore('lyric', {
         }
         return { success: false, error: error.message }
       } finally {
-        // 只有仍是当前 key 时才关 loading，避免后发请求把先发的 loading 提前关掉
-        if (this.currentKey === cacheKey) {
+        // 防护：如果是最新请求或当前 key，确保关闭 loading，杜绝状态卡死
+        if (!seq || seq === _loadSeq || this.currentKey === cacheKey) {
           this.setIsLyricLoading(false)
         }
       }

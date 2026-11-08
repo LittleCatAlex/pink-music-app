@@ -4,11 +4,12 @@
  */
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const crypto = require('crypto');
 const axios = require('axios');
 const { app, session } = require('electron');
 
-const isDevLog = !app.isPackaged || process.env.NODE_ENV === 'development';
+const isDevLog = Boolean(!app || (typeof app === 'object' && !app.isPackaged) || process.env.NODE_ENV === 'development');
 function dlog(...args) {
   if (isDevLog) console.log(...args);
 }
@@ -18,7 +19,16 @@ const BILIBILI_WEB = 'https://passport.bilibili.com';
 
 const UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
-const COOKIE_STORE_PATH = path.join(app.getPath('userData'), 'bilibili-cookies.json');
+function getCookieStorePath() {
+  try {
+    if (app && typeof app.getPath === 'function') {
+      return path.join(app.getPath('userData'), 'bilibili-cookies.json');
+    }
+  } catch (_) {}
+  const home = os.homedir ? os.homedir() : (process.env.USERPROFILE || process.env.HOME || '');
+  return path.join(home, 'AppData', 'Roaming', 'pink-music', 'bilibili-cookies.json');
+}
+const COOKIE_STORE_PATH = getCookieStorePath();
 
 async function loadCookiesFromFile() {
   try {
@@ -126,8 +136,9 @@ class BilibiliAPI {
   async refreshCookiesFromSession() {
     let fileCookies = {};
     try {
-      if (fs.existsSync(COOKIE_STORE_PATH)) {
-        const raw = fs.readFileSync(COOKIE_STORE_PATH, 'utf-8');
+      const cookieFile = getCookieStorePath();
+      if (fs.existsSync(cookieFile)) {
+        const raw = fs.readFileSync(cookieFile, 'utf-8');
         const parsed = JSON.parse(raw);
         if (parsed && typeof parsed === 'object') fileCookies = parsed;
       }
@@ -287,7 +298,7 @@ class BilibiliAPI {
         try {
           const data = await this.request(`${BILIBILI_BASE}/x/player/wbi/v2`, {
             params: { bvid, cid: targetCid },
-            timeout: 15000
+            timeout: 5000
           });
           if (data?.data?.need_login_subtitle) {
             needLogin = true;
@@ -296,40 +307,34 @@ class BilibiliAPI {
           if (Array.isArray(subtitles) && subtitles.length > 0) {
             return { code: 0, data: { subtitles, needLogin } };
           }
+          // wbi/v2 正常响应 (code === 0)：明确无字幕或需要登录，立即返回，不进行多余兜底
+          if (data?.code === 0) {
+            return { code: 0, data: { subtitles: [], needLogin } };
+          }
         } catch (e) {
           dlog('[getVideoSubtitles] wbi/v2 尝试失败:', e.message);
         }
         if (needLogin) break;
-        if (attempt === 0) await new Promise(r => setTimeout(r, 400));
+        if (attempt === 0) await new Promise(r => setTimeout(r, 200));
       }
 
-      try {
-        const dataV2 = await this.request(`${BILIBILI_BASE}/x/player/v2`, {
-          params: { bvid, cid: targetCid },
-          timeout: 15000
-        });
-        if (dataV2?.data?.need_login_subtitle) {
-          needLogin = true;
+      // 仅在 wbi/v2 异常网络失败且未要求登录时，才尝试 player/v2
+      if (!needLogin) {
+        try {
+          const dataV2 = await this.request(`${BILIBILI_BASE}/x/player/v2`, {
+            params: { bvid, cid: targetCid },
+            timeout: 4000
+          });
+          if (dataV2?.data?.need_login_subtitle) {
+            needLogin = true;
+          }
+          const subtitlesV2 = dataV2?.data?.subtitle?.subtitles;
+          if (Array.isArray(subtitlesV2) && subtitlesV2.length > 0) {
+            return { code: 0, data: { subtitles: subtitlesV2, needLogin } };
+          }
+        } catch (e) {
+          dlog('[getVideoSubtitles] player/v2 尝试失败:', e.message);
         }
-        const subtitlesV2 = dataV2?.data?.subtitle?.subtitles;
-        if (Array.isArray(subtitlesV2) && subtitlesV2.length > 0) {
-          return { code: 0, data: { subtitles: subtitlesV2, needLogin } };
-        }
-      } catch (e) {
-        dlog('[getVideoSubtitles] player/v2 尝试失败:', e.message);
-      }
-
-      try {
-        const viewData = await this.request(`${BILIBILI_BASE}/x/web-interface/view`, {
-          params: { bvid },
-          timeout: 15000
-        });
-        const viewSubs = viewData?.data?.subtitle?.list || viewData?.data?.subtitle?.subtitles;
-        if (Array.isArray(viewSubs) && viewSubs.length > 0) {
-          return { code: 0, data: { subtitles: viewSubs, needLogin } };
-        }
-      } catch (e) {
-        dlog('[getVideoSubtitles] view 尝试失败:', e.message);
       }
 
       return { code: 0, data: { subtitles: [], needLogin } };

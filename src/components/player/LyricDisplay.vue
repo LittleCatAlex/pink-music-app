@@ -167,7 +167,10 @@ watch(
       newTrack.title || '',
       newTrack.author || ''
     )
-    if (lyricStore.currentKey === newKey && lyricStore.currentLyric && lyricStore.loadedHash === newKey) return
+    if (lyricStore.currentKey === newKey && lyricStore.currentLyric && lyricStore.loadedHash === newKey) {
+      lyricStore.setIsLyricLoading(false)
+      return
+    }
     await lyricStore.loadLyricForTrack(newTrack)
   },
   { immediate: true }
@@ -416,7 +419,7 @@ function getSubLines(line) {
   >
     <!-- ============ 歌词主视图（抽屉未打开时） ============ -->
     <div v-show="!showSearchPanel" class="lyric-main">
-      <div v-if="lyricStore.isLyricLoading" class="lyric-state">
+      <div v-if="lyricStore.isLyricLoading && !lyricStore.hasLyric" class="lyric-state">
         <div class="spinner"></div>
         <p>正在匹配歌词…</p>
       </div>
