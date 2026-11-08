@@ -15,6 +15,7 @@ import LocalMusicView from './components/LocalMusicView.vue'
 import { applyLiquidGlass, destroyLiquidGlass } from './composables/useLiquidGlass'
 import { useDesktopLyrics } from './composables/useDesktopLyrics'
 import { useAudioPlayer } from './composables/useAudioPlayer'
+import { useMediaSessionSync } from './composables/useMediaSessionSync'
 import {
   getAudioEl,
   bindPlaybackRuntime,
@@ -99,78 +100,7 @@ function stripHtmlTags(html) {
   return html.replace(/<[^>]*>/g, '');
 }
 
-// Media Session 由 audioEngine.updateMediaSession 统一维护（避免 timeupdate 里高频刷新）
-function syncDiscordRpc() {
-  if (typeof window === 'undefined' || !window.electronAPI?.discord) return;
-  const track = currentTrack.value;
-  if (!track || !track.title) {
-    try { window.electronAPI.discord.clearActivity(); } catch (_) {}
-    return;
-  }
-  try {
-    window.electronAPI.discord.updateActivity({
-      title: track.title,
-      artist: track.artist || track.author || '',
-      duration: duration.value || track.duration || 0,
-      currentTime: currentTime.value || 0,
-      isPlaying: isPlaying.value,
-      cover: track.cover || track.pic || ''
-    });
-  } catch (_) {}
-}
 
-function syncMediaSession() {
-  updateMediaSession(currentTrack.value, isPlaying.value);
-  syncDiscordRpc();
-}
-
-function setupMediaSessionHandlers() {
-  if (!('mediaSession' in navigator)) return
-
-  // play / pause 各自实现：系统面板发的是绝对指令，共用一个 toggle 会与面板状态互相拉扯
-  navigator.mediaSession.setActionHandler('play', () => {
-    const el = getAudioEl()
-    if (!el.paused) return
-    Promise.resolve(playAudio()).then(() => {
-      isPlaying.value = true
-      playerStore.setIsPlaying(true)
-      syncMediaSession()
-    }).catch(() => {
-      isPlaying.value = false
-      playerStore.setIsPlaying(false)
-      syncMediaSession()
-    })
-  })
-
-  navigator.mediaSession.setActionHandler('pause', () => {
-    const el = getAudioEl()
-    if (el.paused) return
-    pauseAudio()
-    isPlaying.value = false
-    playerStore.setIsPlaying(false)
-    syncMediaSession()
-  })
-
-  navigator.mediaSession.setActionHandler('previoustrack', () => {
-    playPrevious()
-  })
-
-  navigator.mediaSession.setActionHandler('nexttrack', () => {
-    playNext()
-  })
-
-  // 系统面板拖动进度：部分平台不支持 seekto，注册与赋值都可能抛，整体兜住
-  try {
-    navigator.mediaSession.setActionHandler('seekto', (e) => {
-      if (e?.seekTime == null) return
-      try {
-        seekAudio(e.seekTime)
-        currentTime.value = e.seekTime
-        playerStore.setCurrentTime(e.seekTime)
-      } catch (_) {}
-    })
-  } catch (_) {}
-}
 
 // 主题由 themeStore 统一管理（MineView 设置 tab 提供切换入口），
 // 启动时通过 themeStore.initTheme() 同步到 <html> 标签，详见 onMounted。
@@ -214,6 +144,26 @@ function onSeekEnd() { isSeeking.value = false }
 const isAudioLoading = ref(false)
 const audioError = ref('')
 const bufferedProgress = ref(0)
+
+const { syncMediaSession, syncDiscordRpc, setupMediaSessionHandlers } = useMediaSessionSync({
+  currentTrack,
+  isPlaying,
+  currentTime,
+  duration,
+  playerStore,
+  getAudioEl,
+  playAudio,
+  pauseAudio,
+  playPrevious: () => playPrevious(),
+  playNext: () => playNext(),
+  seekAudio
+})
+
+const currentLangShort = computed(() => {
+  if (settingsStore.language === 'zh-CN') return '简'
+  if (settingsStore.language === 'en-US') return 'EN'
+  return '繁'
+})
 const showCreatePlaylistModal = ref(false)
 const newPlaylistName = ref('')
 // 重命名歌单弹窗状态
@@ -2365,6 +2315,20 @@ onUnmounted(() => {
       </div>
 
       <div class="topbar-right">
+        <!-- 一键切换语言 -->
+        <button
+          class="topbar-btn lang-quick-toggle"
+          :title="$t('topbar.langSwitch')"
+          @click="settingsStore.toggleLanguage()"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16">
+            <circle cx="12" cy="12" r="10"></circle>
+            <line x1="2" y1="12" x2="22" y2="12"></line>
+            <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1 4-10z"></path>
+          </svg>
+          <span class="lang-code-tag">{{ currentLangShort }}</span>
+        </button>
+
         <!-- 一键切换深色/浅色模式 -->
         <button
           class="topbar-btn theme-quick-toggle"
@@ -2405,18 +2369,18 @@ onUnmounted(() => {
       <Transition name="page" mode="out-in">
         <section v-if="currentView === 'home'" key="home" class="home-section">
         <div class="hero-section">
-          <h2 class="text-gradient">欢迎使用 Pink Music</h2>
-          <p>从 B 站发现并播放你喜欢的音乐</p>
+          <h2 class="text-gradient">{{ $t('home.heroTitle') }}</h2>
+          <p>{{ $t('home.heroSubtitle') }}</p>
         </div>
 
         <div class="recommended-section">
           <div class="section-header">
-            <h3>推荐音乐</h3>
+            <h3>{{ $t('home.recommendedMusic') }}</h3>
             <button
               class="refresh-btn"
               @click="loadRecommendedMusic"
               :disabled="isLoadingRecommended"
-              title="刷新推荐"
+              :title="$t('home.refreshRecommend')"
             >
               <svg
                 viewBox="0 0 24 24"

@@ -1,3 +1,4 @@
+import { setLanguage as updateI18nLanguage } from '@/i18n'
 import { defineStore } from 'pinia'
 import { setTargetState as applyEQToEngine, EQ_PRESETS } from '@/utils/audioEQ'
 import { createPersistentStorage } from '@/utils/persistentStorage'
@@ -17,8 +18,9 @@ let _persistChain = Promise.resolve()
 // Schema v11：新增本地封面自动匹配开关 localAutoFetchCover
 // Schema v12：新增默认歌词源偏好 lyricPreferredSource（默认酷狗；老数据缺失时迁移补默认值）
 // Schema v13：新增桌面歌词高对比模式开关 desktopLyricsHighContrast
+// Schema v15：新增界面语言设置 language (zh-TW | zh-CN | en-US)
 const settingsSchema = defineSchema({
-  version: 14,
+  version: 15,
   fields: {
     audioQuality: s.enum(['auto', 'lossless', 'high', 'medium', 'low'], 'auto'),
     // 首次启动默认关闭：可视化较吃性能，需要时在引导页或「我的 → 设置」里开启
@@ -40,7 +42,8 @@ const settingsSchema = defineSchema({
     // 本地音乐库
     localIncludeUnplayable: s.boolean(true),
     localCheckMissingOnStartup: s.boolean(true),
-    localAutoFetchCover: s.boolean(false)
+    localAutoFetchCover: s.boolean(false),
+    language: s.enum(['zh-TW', 'zh-CN', 'en-US'], 'zh-TW')
   },
   migrations: {
     2: (data) => ({ ...data, windowControlsEnabled: data.windowControlsEnabled ?? true }),
@@ -81,6 +84,10 @@ const settingsSchema = defineSchema({
     14: (data) => ({
       ...data,
       lyricPreferredSource: data.lyricPreferredSource === 'netease' ? 'netease' : 'bilibili'
+    }),
+    15: (data) => ({
+      ...data,
+      language: data.language && ['zh-TW', 'zh-CN', 'en-US'].includes(data.language) ? data.language : 'zh-TW'
     })
   }
 })
@@ -94,6 +101,9 @@ const storage = createPersistentStorage('settings', { schema: settingsSchema, de
 // 7 个字段统一从 storage.peek() 拿，老 key 不再独立 peek —— storage 双写策略保证新 key 总是最新。
 // 兜底逻辑：peek 拿不到时用 schema 的 default（schema.parse 内部处理）
 const _peekedSettings = storage.peek(null) || {}
+if (_peekedSettings.language) {
+  updateI18nLanguage(_peekedSettings.language)
+}
 
 // 启动期同步：把 EQ pending 状态先灌进 audioEQ，attachAudioAnalyser 时 initEQ 会自动应用
 applyEQToEngine(
@@ -150,7 +160,10 @@ export const useSettingsStore = defineStore('settings', {
     localCheckMissingOnStartup: typeof _peekedSettings.localCheckMissingOnStartup === 'boolean'
       ? _peekedSettings.localCheckMissingOnStartup
       : true,
-    localAutoFetchCover: _peekedSettings.localAutoFetchCover === true
+    localAutoFetchCover: _peekedSettings.localAutoFetchCover === true,
+    language: (_peekedSettings._schemaVersion && _peekedSettings._schemaVersion >= 15 && ['zh-TW', 'zh-CN', 'en-US'].includes(_peekedSettings.language))
+      ? _peekedSettings.language
+      : 'zh-TW'
   }),
   actions: {
     /**
@@ -183,6 +196,10 @@ export const useSettingsStore = defineStore('settings', {
         if (typeof data.localIncludeUnplayable === 'boolean') this.localIncludeUnplayable = data.localIncludeUnplayable
         if (typeof data.localCheckMissingOnStartup === 'boolean') this.localCheckMissingOnStartup = data.localCheckMissingOnStartup
         if (typeof data.localAutoFetchCover === 'boolean') this.localAutoFetchCover = data.localAutoFetchCover
+        if (data.language && ['zh-TW', 'zh-CN', 'en-US'].includes(data.language)) {
+          this.language = data.language
+          updateI18nLanguage(data.language)
+        }
         applyEQToEngine(this.eqEnabled, this.eqBands)
       }
     },
@@ -246,6 +263,18 @@ export const useSettingsStore = defineStore('settings', {
      * 语义是「优先使用」：主进程按 [偏好源, 另一个源] 顺序尝试，偏好源失败仍会回退。
      * 非法值直接忽略（保持现值），避免脏数据写进持久化快照。
      */
+    setLanguage(lang) {
+      if (!['zh-TW', 'zh-CN', 'en-US'].includes(lang)) return
+      this.language = lang
+      updateI18nLanguage(lang)
+      this.persist()
+    },
+    toggleLanguage() {
+      const order = ['zh-TW', 'zh-CN', 'en-US']
+      const idx = order.indexOf(this.language)
+      const next = order[(idx + 1) % order.length]
+      this.setLanguage(next)
+    },
     setLyricPreferredSource(source) {
       if (!['bilibili', 'kugou', 'netease'].includes(source)) return
       this.lyricPreferredSource = source
@@ -338,7 +367,8 @@ export const useSettingsStore = defineStore('settings', {
           checkUpdateOnStartup: this.checkUpdateOnStartup,
           localIncludeUnplayable: this.localIncludeUnplayable,
           localCheckMissingOnStartup: this.localCheckMissingOnStartup,
-          localAutoFetchCover: this.localAutoFetchCover
+          localAutoFetchCover: this.localAutoFetchCover,
+          language: this.language
         })
       })
       return _persistChain

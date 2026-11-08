@@ -4,6 +4,7 @@ import CustomBackgroundSettings from './CustomBackgroundSettings.vue'
 import { useUserStore, usePlayerStore, usePlaylistStore, useSettingsStore, useThemeStore, useUpdateStore } from '../stores'
 import { parseDuration } from '../utils/bilibili'
 import { EQ_BANDS, EQ_PRESET_KEYS, EQ_PRESET_LABELS, EQ_DB_MIN, EQ_DB_MAX } from '../utils/audioEQ'
+import { SUPPORTED_LANGUAGES, t } from '../i18n'
 
 const userStore = useUserStore()
 const playerStore = usePlayerStore()
@@ -304,11 +305,13 @@ function formatDb(v) {
   return (v > 0 ? '+' : '') + v.toFixed(1).replace(/\.0$/, '')
 }
 
-const tabs = [
-  { key: 'profile', label: '我的' },
-  { key: 'history', label: '历史' },
-  { key: 'settings', label: '设置' }
-]
+const languageOptions = SUPPORTED_LANGUAGES
+
+const tabs = computed(() => [
+  { key: 'profile', label: t('nav.library', '我的') },
+  { key: 'history', label: t('player.queue', '历史') },
+  { key: 'settings', label: t('nav.settings', '设置') }
+])
 
 const playHistory = computed(() => playerStore.playHistory || [])
 const hasUser = computed(() => !!userStore.userInfo)
@@ -606,6 +609,27 @@ function toggleDiscordRpc(enabled) {
 
     <!-- 设置 标签 -->
     <div v-else-if="activeTab === 'settings'" key="settings" class="mine-content">
+      <!-- 语言设置（一键切换繁体/简体/英文） -->
+      <div class="settings-section glass-card">
+        <h3>{{ $t('settings.language') }}</h3>
+        <div class="setting-item">
+          <label>{{ $t('settings.langSelect') }}</label>
+          <div class="setting-value">
+            <div class="theme-mode-buttons">
+              <button
+                v-for="l in languageOptions"
+                :key="l.code"
+                type="button"
+                class="theme-mode-btn"
+                :class="{ active: settingsStore.language === l.code }"
+                @click="settingsStore.setLanguage(l.code)"
+              >
+                {{ l.label }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
       <!-- 主题设置：迁移自侧边栏的旧主题面板。
            模式（深/浅）+ 颜色（含 Apple Music）双层选择。 -->
       <div class="settings-section glass-card">
