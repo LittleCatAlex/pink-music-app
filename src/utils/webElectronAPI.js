@@ -107,14 +107,37 @@ function matchSong(results, cleanTitle, bookTitle, query) {
  */
 
 function getStoredCookies() {
-  try {
-    const raw = localStorage.getItem('bilibili_cookies');
-    if (raw) return JSON.parse(raw);
-  } catch (_) {}
-  try {
-    const raw = localStorage.getItem('bilibili-login-cookie');
-    if (raw) return JSON.parse(raw);
-  } catch (_) {}
+  const keys = [
+    'pink-music-login',
+    'bilibili-login-cookie',
+    'bilibili_cookies',
+    'app-data-login'
+  ];
+  for (const k of keys) {
+    try {
+      const raw = localStorage.getItem(k);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          const target = parsed.data && typeof parsed.data === 'object' ? parsed.data : parsed;
+          if (target && (target.SESSDATA || target.bili_jct || target.DedeUserID)) {
+            return target;
+          }
+        }
+      }
+    } catch (_) {}
+  }
+  // 回退解析 document.cookie
+  if (typeof document !== 'undefined' && document.cookie) {
+    const fromDoc = {};
+    document.cookie.split(';').forEach(pair => {
+      const [k, ...v] = pair.trim().split('=');
+      if (k) fromDoc[k] = v.join('=');
+    });
+    if (fromDoc.bili_jct || fromDoc.DedeUserID || fromDoc.SESSDATA) {
+      return fromDoc;
+    }
+  }
   return {};
 }
 
@@ -123,6 +146,7 @@ function saveStoredCookies(cookies) {
   const current = getStoredCookies();
   const merged = { ...current, ...cookies };
   try {
+    localStorage.setItem('pink-music-login', JSON.stringify(merged));
     localStorage.setItem('bilibili_cookies', JSON.stringify(merged));
     localStorage.setItem('bilibili-login-cookie', JSON.stringify(merged));
     localStorage.setItem('app-data-login', JSON.stringify(merged));
@@ -133,6 +157,7 @@ function saveStoredCookies(cookies) {
 
 function clearStoredCookies() {
   try {
+    localStorage.removeItem('pink-music-login');
     localStorage.removeItem('bilibili_cookies');
     localStorage.removeItem('bilibili-login-cookie');
     localStorage.removeItem('app-data-login');
@@ -227,6 +252,18 @@ export function setupWebElectronAPI() {
   if (typeof window === 'undefined' || window.electronAPI) return;
 
   console.info('[Web Mode] 未检测到 Electron 环境，已初始化 Web 模式 electronAPI 适配器。');
+
+  // 若处于 Vite 开发/预览服务器，尝试同步本地磁盘中的凭证（免去重复扫码）
+  try {
+    fetch('/api-dev/cookies')
+      .then(r => r.json())
+      .then(res => {
+        if (res?.code === 0 && res.data && (res.data.SESSDATA || Object.keys(res.data).length > 0)) {
+          saveStoredCookies(res.data);
+        }
+      })
+      .catch(() => {});
+  } catch (_) {}
 
   window.electronAPI = {
     isWeb: true,

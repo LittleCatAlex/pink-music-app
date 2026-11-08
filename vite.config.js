@@ -3,9 +3,45 @@ import vue from '@vitejs/plugin-vue'
 import path from 'path'
 import http from 'http'
 import https from 'https'
+import fs from 'fs'
+import os from 'os'
+
+function getLocalBilibiliCookies() {
+  try {
+    const home = os.homedir();
+    const candidatePaths = [
+      path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'pink-music', 'bilibili-cookies.json'),
+      path.join(home, 'Library', 'Application Support', 'pink-music', 'bilibili-cookies.json'),
+      path.join(home, '.config', 'pink-music', 'bilibili-cookies.json')
+    ];
+    for (const p of candidatePaths) {
+      if (fs.existsSync(p)) {
+        const raw = JSON.parse(fs.readFileSync(p, 'utf-8'));
+        if (raw && typeof raw === 'object') return raw;
+      }
+    }
+  } catch (_) {}
+  return null;
+}
+
+function resolveDiskCookieHeader() {
+  const raw = getLocalBilibiliCookies();
+  if (!raw) return '';
+  return Object.entries(raw)
+    .filter(([_, v]) => v != null && v !== '')
+    .map(([k, v]) => `${k}=${v}`)
+    .join('; ');
+}
 
 function audioProxyPlugin() {
   const setupMiddleware = (server) => {
+    server.middlewares.use('/api-dev/cookies', (req, res) => {
+      const cookies = getLocalBilibiliCookies() || {};
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.end(JSON.stringify({ code: 0, data: cookies }));
+    });
+
     server.middlewares.use('/proxy-audio', (req, res) => {
       try {
         const parsedUrl = new URL(req.url, 'http://localhost');
@@ -86,10 +122,16 @@ const proxyConfig = {
     cookieDomainRewrite: 'localhost',
     configure: (proxy) => {
       proxy.on('proxyReq', (proxyReq, req) => {
-        const customCookie = req.headers['x-bilibili-cookie'];
-        if (customCookie) {
+        let cookie = req.headers['x-bilibili-cookie'];
+        if (!cookie || !cookie.includes('SESSDATA')) {
+          const diskCookie = resolveDiskCookieHeader();
+          if (diskCookie) {
+            cookie = cookie ? `${cookie}; ${diskCookie}` : diskCookie;
+          }
+        }
+        if (cookie) {
           const existing = proxyReq.getHeader('cookie') || '';
-          proxyReq.setHeader('cookie', existing ? `${existing}; ${customCookie}` : customCookie);
+          proxyReq.setHeader('cookie', existing ? `${existing}; ${cookie}` : cookie);
         }
       });
     }
@@ -103,7 +145,22 @@ const proxyConfig = {
       Origin: 'https://passport.bilibili.com',
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     },
-    cookieDomainRewrite: 'localhost'
+    cookieDomainRewrite: 'localhost',
+    configure: (proxy) => {
+      proxy.on('proxyReq', (proxyReq, req) => {
+        let cookie = req.headers['x-bilibili-cookie'];
+        if (!cookie || !cookie.includes('SESSDATA')) {
+          const diskCookie = resolveDiskCookieHeader();
+          if (diskCookie) {
+            cookie = cookie ? `${cookie}; ${diskCookie}` : diskCookie;
+          }
+        }
+        if (cookie) {
+          const existing = proxyReq.getHeader('cookie') || '';
+          proxyReq.setHeader('cookie', existing ? `${existing}; ${cookie}` : cookie);
+        }
+      });
+    }
   },
   '/netease-api': {
     target: 'https://music.163.com',

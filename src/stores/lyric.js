@@ -3,6 +3,7 @@ import { createPersistentStorage } from '@/utils/persistentStorage'
 import { s, defineSchema } from '@/utils/schema'
 import { parseLyric as parseLyricPure } from '@/utils/lrcParser'
 import { useSettingsStore } from '@/stores/settings'
+import { usePlayerStore } from '@/stores/player'
 
 // ───────── 持久化结构改造 ─────────
 // 老版本把歌词数据分 3 个 localStorage key：
@@ -292,7 +293,8 @@ export const useLyricStore = defineStore('lyric', {
       const isLocal = track.source === 'local' || !!track.filePath
       // 本地曲用稳定 id 作身份；B 站曲沿用 bvid
       const bvid = isLocal ? (track.id || track.filePath || '') : track.bvid
-      const playerStore = usePlayerStore()
+      let playerStore = null
+      try { playerStore = usePlayerStore() } catch (_) {}
       let cid = isLocal ? 0 : (track.cid && track.cid > 1 ? track.cid : (playerStore?.currentTrack?.bvid === bvid && playerStore?.currentTrack?.cid > 1 ? playerStore.currentTrack.cid : (track.cid || null)))
       const title = track.title || ''
       const artist = track.author || ''
