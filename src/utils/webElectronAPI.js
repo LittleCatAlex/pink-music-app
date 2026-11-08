@@ -404,7 +404,7 @@ export function setupWebElectronAPI() {
 
     // 版本检查
     async getAppVersion() {
-      return '2.6.3';
+      return '2.7.0';
     },
     async checkForUpdate() {
       return { hasUpdate: false };

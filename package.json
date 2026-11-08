@@ -1,7 +1,7 @@
 {
   "name": "PinkMusic",
   "private": true,
-  "version": "2.6.3",
+  "version": "2.7.0",
   "main": "electron/main.js",
   "scripts": {
     "dev": "vite",
@@ -11,6 +11,7 @@
     "electron:build": "npm run build && electron-builder -mw",
     "electron:build:mac": "npm run build && electron-builder --mac",
     "electron:build:win:x64": "npm run build && electron-builder --win --x64",
+    "electron:build:win:unpack": "npm run build && electron-builder --win --x64 --dir",
     "electron:build:win:arm64": "npm run build && electron-builder --win --arm64",
     "electron:build:win:all": "npm run build && electron-builder --win --x64 --arm64",
     "electron:build:all": "npm run build && electron-builder -mw",
@@ -89,6 +90,12 @@
         },
         {
           "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
           "arch": [
             "x64"
           ]
